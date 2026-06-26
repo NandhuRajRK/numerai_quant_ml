@@ -1,0 +1,21 @@
+.DS_Store
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Numerai data and generated artifacts
+data/raw/*
+data/processed/*
+data/predictions/*
+models/*
+artifacts/*
+reports/*
+
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/predictions/.gitkeep
+!models/.gitkeep
