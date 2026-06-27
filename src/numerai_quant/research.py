@@ -21,7 +21,11 @@ from numerai_quant.ensemble import (
     raw_predict,
     save_ensemble_bundle,
 )
-from numerai_quant.features import detect_feature_columns, make_prediction_frame
+from numerai_quant.features import (
+    detect_feature_columns,
+    ensure_identifier_column,
+    make_prediction_frame,
+)
 from numerai_quant.reporting import (
     plot_correlation_histogram,
     plot_cumulative_correlation,
@@ -37,6 +41,78 @@ from numerai_quant.validation import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _prediction_columns(frame: pd.DataFrame, prediction_col: str) -> list[str]:
+    """Return prediction-like columns worth checkpointing."""
+    selected = []
+    for column in frame.columns:
+        if column == prediction_col or column == "final_prediction":
+            selected.append(column)
+        elif column.endswith("_prediction"):
+            selected.append(column)
+    return selected
+
+
+def _partial_leaderboard(fold_metrics: pd.DataFrame) -> pd.DataFrame:
+    """Build a running leaderboard from partial fold metrics."""
+    if fold_metrics.empty:
+        return pd.DataFrame()
+    return (
+        fold_metrics.groupby("model_name", as_index=False)[
+            ["mean_corr", "sharpe_like", "max_drawdown", "mean_abs_feature_exposure"]
+        ]
+        .mean()
+        .sort_values(["mean_corr", "sharpe_like"], ascending=[False, False])
+    )
+
+
+def _checkpoint_fold_frame(
+    run_dir: Path,
+    fold_number: int,
+    fold_frame: pd.DataFrame,
+    config: PipelineConfig,
+) -> None:
+    """Persist the current fold's prediction progress without all raw features."""
+    prediction_columns = _prediction_columns(fold_frame, config.prediction_col)
+    checkpoint_frame = fold_frame[
+        [config.id_col, config.era_col, config.target_col, *prediction_columns]
+    ]
+    save_dataframe(
+        checkpoint_frame,
+        run_dir / "checkpoints" / f"fold_{fold_number:02d}_progress.parquet",
+    )
+
+
+def _write_partial_artifacts(
+    *,
+    run_dir: Path,
+    config: PipelineConfig,
+    fold_rows: list[dict[str, float | int | str]],
+    oof_prediction_frames: list[pd.DataFrame],
+    current_fold_frame: pd.DataFrame | None = None,
+    current_fold_number: int | None = None,
+    status: dict[str, Any] | None = None,
+) -> None:
+    """Write partial metrics, predictions, and status for interrupted-run recovery."""
+    if status is not None:
+        save_json(status, run_dir / "status.json")
+
+    if fold_rows:
+        fold_metrics = pd.DataFrame(fold_rows)
+        save_dataframe(fold_metrics, run_dir / "fold_metrics.partial.csv")
+        leaderboard = _partial_leaderboard(fold_metrics)
+        if not leaderboard.empty:
+            save_dataframe(leaderboard, run_dir / "model_leaderboard.partial.csv")
+
+    if oof_prediction_frames:
+        save_dataframe(
+            pd.concat(oof_prediction_frames, ignore_index=True),
+            run_dir / "oof_predictions.partial.parquet",
+        )
+
+    if current_fold_frame is not None and current_fold_number is not None:
+        _checkpoint_fold_frame(run_dir, current_fold_number, current_fold_frame, config)
 
 
 def create_run_name(config: PipelineConfig, prefix: str = "research") -> str:
@@ -55,6 +131,7 @@ def run_walk_forward_backtest(
     run_name: str | None = None,
 ) -> dict[str, Any]:
     """Run walk-forward validation across the configured model zoo."""
+    train_df = ensure_identifier_column(train_df, id_col=config.id_col)
     feature_cols = detect_feature_columns(train_df)
     specs = enabled_model_specs(config)
     weights = normalized_weights(specs)
@@ -64,13 +141,39 @@ def run_walk_forward_backtest(
         config.path("artifacts_dir"),
         run_name or create_run_name(config, prefix="walkforward"),
     )
+    save_yaml(config.raw, run_dir / "run_config.yaml")
 
-    oof_frames: list[pd.DataFrame] = []
+    oof_prediction_frames: list[pd.DataFrame] = []
+    final_report_frames: list[pd.DataFrame] = []
     fold_rows: list[dict[str, float | int | str]] = []
     neutralization_cfg = dict(config.raw["advanced"]["neutralization"])
     use_neutralization = bool(neutralization_cfg["enabled"])
+    total_folds = len(folds)
+    _write_partial_artifacts(
+        run_dir=run_dir,
+        config=config,
+        fold_rows=[],
+        oof_prediction_frames=[],
+        status={
+            "stage": "initialized",
+            "run_dir": str(run_dir),
+            "total_folds": total_folds,
+            "completed_folds": 0,
+        },
+    )
 
     for fold in folds:
+        LOGGER.info(
+            "Starting fold %s/%s | train eras=%s..%s (%s eras) | validation eras=%s..%s (%s eras)",
+            fold.fold_number,
+            total_folds,
+            fold.train_eras[0],
+            fold.train_eras[-1],
+            len(fold.train_eras),
+            fold.validation_eras[0],
+            fold.validation_eras[-1],
+            len(fold.validation_eras),
+        )
         train_split = train_df[train_df[config.era_col].isin(fold.train_eras)].copy()
         valid_split = train_df[train_df[config.era_col].isin(fold.validation_eras)].copy()
         X_train = train_split[feature_cols]
@@ -82,6 +185,12 @@ def run_walk_forward_backtest(
         ].copy()
 
         for spec in specs:
+            LOGGER.info(
+                "Fold %s/%s | fitting %s",
+                fold.fold_number,
+                total_folds,
+                spec["name"],
+            )
             model = fit_model(spec, X_train, y_train)
             raw_valid_predictions[spec["name"]] = raw_predict(model, valid_split[feature_cols])
             prediction_frame = make_prediction_frame(
@@ -106,6 +215,21 @@ def run_walk_forward_backtest(
             fold_frame[f"{spec['name']}_prediction"] = prediction_frame[
                 config.prediction_col
             ].to_numpy()
+            _write_partial_artifacts(
+                run_dir=run_dir,
+                config=config,
+                fold_rows=fold_rows,
+                oof_prediction_frames=oof_prediction_frames,
+                current_fold_frame=fold_frame,
+                current_fold_number=fold.fold_number,
+                status={
+                    "stage": "model_validated",
+                    "current_fold": fold.fold_number,
+                    "total_folds": total_folds,
+                    "current_model": spec["name"],
+                    "completed_folds": fold.fold_number - 1,
+                },
+            )
 
         ensemble_predictions = blend_predictions(raw_valid_predictions, weights)
         ensemble_frame = make_prediction_frame(
@@ -165,13 +289,42 @@ def run_walk_forward_backtest(
             final_label = "ensemble_neutralized"
 
         fold_frame["final_prediction"] = fold_frame[final_prediction_column].to_numpy()
-        fold_frame["final_model_name"] = final_label
-        fold_frame["fold"] = fold.fold_number
-        oof_frames.append(fold_frame)
+        final_report_frame = fold_frame[[config.era_col, config.target_col, *feature_cols]].copy()
+        final_report_frame[config.prediction_col] = fold_frame["final_prediction"].to_numpy()
+        final_report_frames.append(final_report_frame)
 
-    oof_frame = pd.concat(oof_frames, ignore_index=True)
-    final_report_frame = oof_frame[[config.era_col, config.target_col, *feature_cols]].copy()
-    final_report_frame[config.prediction_col] = oof_frame["final_prediction"].to_numpy()
+        oof_prediction_frame = fold_frame[
+            [
+                config.id_col,
+                config.era_col,
+                config.target_col,
+                "ensemble_prediction",
+                *(["ensemble_neutralized_prediction"] if use_neutralization else []),
+                "final_prediction",
+            ]
+        ].copy()
+        oof_prediction_frame["final_model_name"] = final_label
+        oof_prediction_frame["fold"] = fold.fold_number
+        oof_prediction_frames.append(oof_prediction_frame)
+        _write_partial_artifacts(
+            run_dir=run_dir,
+            config=config,
+            fold_rows=fold_rows,
+            oof_prediction_frames=oof_prediction_frames,
+            current_fold_frame=fold_frame,
+            current_fold_number=fold.fold_number,
+            status={
+                "stage": "fold_completed",
+                "current_fold": fold.fold_number,
+                "total_folds": total_folds,
+                "completed_folds": fold.fold_number,
+                "final_model_name": final_label,
+            },
+        )
+        LOGGER.info("Completed fold %s/%s", fold.fold_number, total_folds)
+
+    oof_frame = pd.concat(oof_prediction_frames, ignore_index=True)
+    final_report_frame = pd.concat(final_report_frames, ignore_index=True)
     final_report = validation_report(
         final_report_frame,
         feature_cols,
@@ -182,22 +335,17 @@ def run_walk_forward_backtest(
     )
 
     fold_metrics = pd.DataFrame(fold_rows)
-    leaderboard = (
-        fold_metrics.groupby("model_name", as_index=False)[
-            ["mean_corr", "sharpe_like", "max_drawdown", "mean_abs_feature_exposure"]
-        ]
-        .mean()
-        .sort_values(["mean_corr", "sharpe_like"], ascending=[False, False])
-    )
-
-    save_yaml(config.raw, run_dir / "run_config.yaml")
+    leaderboard = _partial_leaderboard(fold_metrics)
     save_dataframe(oof_frame, run_dir / "oof_predictions.parquet")
     save_dataframe(fold_metrics, run_dir / "fold_metrics.csv")
     save_dataframe(leaderboard, run_dir / "model_leaderboard.csv")
-    save_dataframe(
-        final_report["feature_exposure"].rename("abs_exposure").reset_index(names="feature"),
-        run_dir / "feature_exposure.csv",
+    feature_exposure_frame = (
+        final_report["feature_exposure"]
+        .rename("abs_exposure")
+        .rename_axis("feature")
+        .reset_index()
     )
+    save_dataframe(feature_exposure_frame, run_dir / "feature_exposure.csv")
     save_json(final_report["summary"], run_dir / "summary.json")
     plot_cumulative_correlation(
         final_report["era_correlations"],
@@ -216,6 +364,18 @@ def run_walk_forward_backtest(
             int(config.raw["reporting"]["top_feature_exposure_count"])
         ),
         fold_metrics=leaderboard,
+    )
+    _write_partial_artifacts(
+        run_dir=run_dir,
+        config=config,
+        fold_rows=fold_rows,
+        oof_prediction_frames=oof_prediction_frames,
+        status={
+            "stage": "completed",
+            "run_dir": str(run_dir),
+            "total_folds": total_folds,
+            "completed_folds": total_folds,
+        },
     )
 
     return {
@@ -237,7 +397,10 @@ def train_final_ensemble(
     include_validation = bool(
         config.raw["advanced"]["train_on"]["include_validation_for_live_model"]
     )
-    training_df = load_training_frame(config, include_validation=include_validation)
+    training_df = ensure_identifier_column(
+        load_training_frame(config, include_validation=include_validation),
+        id_col=config.id_col,
+    )
     feature_cols = detect_feature_columns(training_df)
     specs = enabled_model_specs(config)
     models = {

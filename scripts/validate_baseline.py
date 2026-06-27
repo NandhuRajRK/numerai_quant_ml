@@ -7,7 +7,7 @@ import logging
 
 from numerai_quant.config import load_config
 from numerai_quant.data import load_parquet, raw_dataset_path
-from numerai_quant.features import detect_feature_columns
+from numerai_quant.features import detect_feature_columns, ensure_identifier_column
 from numerai_quant.modeling import load_model, predict_with_model
 from numerai_quant.predict import save_predictions
 from numerai_quant.utils import require_columns, setup_logging
@@ -31,7 +31,10 @@ def main() -> None:
 
     model, feature_cols = load_model(config)
     validation_path = raw_dataset_path(config, config.numerai_file("validation_file"))
-    validation_df = load_parquet(validation_path)
+    validation_df = ensure_identifier_column(
+        load_parquet(validation_path),
+        id_col=config.id_col,
+    )
     require_columns(
         set(validation_df.columns),
         {config.id_col, config.era_col, config.target_col},

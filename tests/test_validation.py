@@ -52,3 +52,17 @@ def test_feature_neutralization_reduces_top_feature_exposure() -> None:
     after = feature_exposure(after_frame, ["feature_a", "feature_b"], sample_size=2)
 
     assert after.loc["feature_a"] < before.loc["feature_a"]
+
+
+def test_feature_exposure_handles_constant_columns() -> None:
+    frame = pd.DataFrame(
+        {
+            "feature_a": [1, 1, 1, 1],
+            "feature_b": [0, 1, 0, 1],
+            "prediction": [0.2, 0.4, 0.6, 0.8],
+        }
+    )
+
+    exposures = feature_exposure(frame, ["feature_a", "feature_b"], sample_size=2)
+
+    assert exposures.loc["feature_a"] == 0.0

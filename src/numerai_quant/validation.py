@@ -76,9 +76,17 @@ def feature_exposure(
     selected_features = feature_cols[:sample_size] if sample_size else feature_cols
     exposures: dict[str, float] = {}
     prediction_rank = frame[prediction_col].rank(method="average")
+    if prediction_rank.nunique(dropna=False) <= 1:
+        return pd.Series({feature: 0.0 for feature in selected_features}).sort_values(
+            ascending=False
+        )
 
     for feature in selected_features:
-        corr = prediction_rank.corr(frame[feature].rank(method="average"), method="pearson")
+        feature_rank = frame[feature].rank(method="average")
+        if feature_rank.nunique(dropna=False) <= 1:
+            exposures[feature] = 0.0
+            continue
+        corr = prediction_rank.corr(feature_rank, method="pearson")
         exposures[feature] = 0.0 if pd.isna(corr) else abs(float(corr))
 
     return pd.Series(exposures).sort_values(ascending=False)

@@ -15,7 +15,7 @@ from numerai_quant.utils import ensure_directories
 def init_run_directory(root: Path, run_name: str) -> Path:
     """Create and return a run directory."""
     run_dir = root / run_name
-    ensure_directories([run_dir, run_dir / "plots", run_dir / "models"])
+    ensure_directories([run_dir, run_dir / "plots", run_dir / "models", run_dir / "checkpoints"])
     return run_dir
 
 

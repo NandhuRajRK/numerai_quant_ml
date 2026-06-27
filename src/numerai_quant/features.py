@@ -14,6 +14,15 @@ def detect_feature_columns(df: pd.DataFrame) -> list[str]:
     return sorted(features)
 
 
+def ensure_identifier_column(df: pd.DataFrame, *, id_col: str = "id") -> pd.DataFrame:
+    """Ensure an identifier column exists, promoting the index when needed."""
+    if id_col in df.columns:
+        return df
+    if df.index.name == id_col:
+        return df.reset_index()
+    return df.assign(**{id_col: df.index.astype(str)})
+
+
 def rank_normalize(values: pd.Series | np.ndarray) -> pd.Series:
     """Convert arbitrary prediction values to percentile ranks in [0, 1]."""
     series = pd.Series(values, copy=False)

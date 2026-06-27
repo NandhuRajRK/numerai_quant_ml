@@ -10,7 +10,11 @@ import pandas as pd
 import yaml
 
 from numerai_quant.config import PipelineConfig
-from numerai_quant.features import detect_feature_columns, make_prediction_frame
+from numerai_quant.features import (
+    detect_feature_columns,
+    ensure_identifier_column,
+    make_prediction_frame,
+)
 from numerai_quant.utils import ensure_directories, require_columns
 
 LOGGER = logging.getLogger(__name__)
@@ -86,10 +90,15 @@ def predict_with_model(
     config: PipelineConfig,
 ) -> pd.DataFrame:
     """Generate normalized Numerai predictions for a dataframe."""
-    require_columns(set(df.columns), set(feature_cols) | {config.id_col}, "Prediction data")
-    raw_predictions = model.predict(df[feature_cols])
+    prepared_df = ensure_identifier_column(df, id_col=config.id_col)
+    require_columns(
+        set(prepared_df.columns),
+        set(feature_cols) | {config.id_col},
+        "Prediction data",
+    )
+    raw_predictions = model.predict(prepared_df[feature_cols])
     return make_prediction_frame(
-        df[config.id_col],
+        prepared_df[config.id_col],
         raw_predictions,
         id_col=config.id_col,
         prediction_col=config.prediction_col,

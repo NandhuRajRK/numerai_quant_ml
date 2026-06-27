@@ -3,7 +3,11 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from numerai_quant.features import make_prediction_frame, validate_prediction_frame
+from numerai_quant.features import (
+    ensure_identifier_column,
+    make_prediction_frame,
+    validate_prediction_frame,
+)
 
 
 def test_make_prediction_frame_normalizes_to_required_columns() -> None:
@@ -22,3 +26,12 @@ def test_prediction_validation_rejects_out_of_range_values() -> None:
 
     with pytest.raises(ValueError, match="between 0 and 1"):
         validate_prediction_frame(frame)
+
+
+def test_ensure_identifier_column_uses_named_index() -> None:
+    frame = pd.DataFrame({"feature_x": [1, 2]}, index=pd.Index(["a", "b"], name="id"))
+
+    normalized = ensure_identifier_column(frame)
+
+    assert "id" in normalized.columns
+    assert normalized["id"].tolist() == ["a", "b"]

@@ -51,10 +51,28 @@ Then set `advanced.model_zoo[].enabled: true` for the XGBoost entry in `configs/
 
 ## Core Commands
 
-Download Numerai train, validation, and live data:
+Download only the train parquet first. This is the default because the backtest only needs train data:
 
 ```bash
 uv run python scripts/download_data.py
+```
+
+Download train first, then validation and live:
+
+```bash
+uv run python scripts/download_data.py --all
+```
+
+Download train first, then fetch validation and live in parallel:
+
+```bash
+uv run python scripts/download_data.py --all --parallel-secondary
+```
+
+Download only the live parquet when you are ready to generate predictions:
+
+```bash
+uv run python scripts/download_data.py --live-only
 ```
 
 Train the original LightGBM baseline:
@@ -73,6 +91,12 @@ Run the advanced walk-forward backtest across the model zoo:
 
 ```bash
 uv run python scripts/backtest_walkforward.py
+```
+
+Run a light local smoke-test backtest before you spend laptop time or Colab time on the full configuration:
+
+```bash
+uv run python scripts/backtest_walkforward.py --config configs/local_smoke.yaml
 ```
 
 Train the final ensemble bundle for live use:
@@ -112,6 +136,11 @@ uv run --extra dev pytest
 uv run --extra dev ruff check .
 ```
 
+Heavy runs are better documented now for cloud offload too:
+
+- local smoke test: `configs/local_smoke.yaml`
+- full backtest handoff notes: `docs/COLAB.md`
+
 ## Validation Philosophy
 
 Numerai data is organized into eras, which act like time slices. This repo treats time structure seriously.
@@ -145,6 +174,14 @@ Each advanced backtest creates an ignored artifact run directory containing:
 - `plots/model_comparison.png`
 - `report.md`
 
+During long runs, the backtest also writes progress checkpoints so interrupted runs still leave breadcrumbs:
+
+- `status.json`
+- `fold_metrics.partial.csv`
+- `model_leaderboard.partial.csv`
+- `oof_predictions.partial.parquet`
+- `checkpoints/fold_XX_progress.parquet`
+
 Final ensemble fitting also snapshots the saved production bundle into a run directory for traceability.
 
 ## CORR and MMC
@@ -169,6 +206,8 @@ They belong in `.env`. The script validates their presence and never prints the 
 - The default dataset version remains `v5.2` until you update `configs/baseline.yaml`.
 - The advanced workflow uses the train parquet for walk-forward backtesting and can optionally append validation rows when fitting the final live ensemble.
 - XGBoost support is optional and disabled by default so the repo stays runnable from a fresh clone without extra setup.
+- If a prior download was interrupted, `numerapi` will resume from the existing `.temp` file when the destination path is reused.
+- `configs/local_smoke.yaml` is intentionally small and pipeline-focused; it is for robustness checks, not meaningful score chasing.
 
 ## Limitations
 
