@@ -303,7 +303,7 @@ The rough progression looked like this:
 - aggressive feature filtering hurt performance
 - reblending saved fold predictions was worth implementing because it sped up ensemble iteration immediately
 
-That last point matters: some of the best improvement in this repo came from better experiment workflow, not just swapping models.
+Some of the largest improvements in the repository came from better experiment workflow, not only from changing model classes.
 
 ## Environment Variables
 
