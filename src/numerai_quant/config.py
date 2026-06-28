@@ -95,3 +95,11 @@ def load_config(config_path: Path | str = "configs/baseline.yaml") -> PipelineCo
         raise ValueError(f"Config must be a mapping: {path}")
 
     return PipelineConfig(raw=raw, root_dir=root_dir)
+
+
+def load_config_mapping(raw: dict[str, Any], *, root_dir: Path | None = None) -> PipelineConfig:
+    """Build a config object from an already-loaded mapping."""
+    if not isinstance(raw, dict):
+        raise ValueError("Config must be a mapping.")
+    resolved_root = root_dir or find_project_root()
+    return PipelineConfig(raw=raw, root_dir=resolved_root)

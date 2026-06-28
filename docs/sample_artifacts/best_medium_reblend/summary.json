@@ -1,0 +1,11 @@
+{
+  "max_abs_feature_exposure": 0.09483169099586113,
+  "max_corr": 0.24343645978476902,
+  "max_drawdown": 0.0,
+  "mean_abs_feature_exposure": 0.013630649721561567,
+  "mean_corr": 0.08032092226295044,
+  "min_corr": 0.0016549028781285414,
+  "num_eras": 12,
+  "sharpe_like": 0.9570024333820685,
+  "std_corr": 0.08392969491111373
+}

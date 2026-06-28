@@ -32,6 +32,27 @@ def test_build_walk_forward_folds_uses_ordered_eras() -> None:
     assert folds[-1].validation_eras == ["era10", "era11"]
 
 
+def test_build_walk_forward_folds_reindexes_after_max_fold_trimming() -> None:
+    frame = pd.DataFrame(
+        {
+            "era": [f"era{i}" for i in range(1, 13)],
+            "target": [0.1] * 12,
+            "prediction": [0.1] * 12,
+        }
+    )
+
+    folds = build_walk_forward_folds(
+        frame,
+        min_train_eras=3,
+        validation_eras=2,
+        embargo_eras=1,
+        step_size=1,
+        max_folds=3,
+    )
+
+    assert [fold.fold_number for fold in folds] == [1, 2, 3]
+
+
 def test_feature_neutralization_reduces_top_feature_exposure() -> None:
     frame = pd.DataFrame(
         {

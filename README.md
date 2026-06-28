@@ -13,10 +13,26 @@ Numerai is a hedge-fund-backed data science tournament where participants train 
 - Walk-forward era validation instead of one static split.
 - Multi-model ensemble with configurable weights.
 - Optional XGBoost support through a `uv` extra.
+- Optional CatBoost and MLX-based neural experiments through `uv` extras.
 - Feature-neutralized post-processing to reduce raw feature exposure.
+- Fast reblend workflow for testing new ensemble weights without retraining base models.
 - Run artifact bundles with metrics, plots, leaderboards, predictions, configs, and reports.
 - Stable saved ensemble bundle for live prediction generation.
 - Dry-run-first submission flow that refuses to run without environment credentials.
+
+## Best Observed Medium Run
+
+The strongest result produced during local experimentation so far came from a tuned CatBoost-heavy
+medium run plus a no-retrain reblend over cached fold predictions:
+
+- `ensemble mean_corr`: `0.081136`
+- `ensemble sharpe_like`: `0.979448`
+- `catboost_optional mean_corr`: `0.079392`
+- `lgbm_main mean_corr`: `0.070495`
+
+Curated sample artifacts from that run live in
+[`docs/sample_artifacts/best_medium_reblend/`](docs/sample_artifacts/best_medium_reblend/).
+This is still a backtest, not a claim about live profitability.
 
 ## Repository Structure
 
@@ -47,7 +63,12 @@ To enable XGBoost in the advanced model zoo:
 uv sync --extra dev --extra xgboost
 ```
 
-Then set `advanced.model_zoo[].enabled: true` for the XGBoost entry in `configs/baseline.yaml`.
+To enable CatBoost or MLX experiments:
+
+```bash
+uv sync --extra dev --extra catboost
+uv sync --extra dev --extra mlx
+```
 
 ## Core Commands
 
@@ -91,6 +112,20 @@ Run the advanced walk-forward backtest across the model zoo:
 
 ```bash
 uv run python scripts/backtest_walkforward.py
+```
+
+Run the current strongest tuned medium config:
+
+```bash
+uv run python scripts/backtest_walkforward.py --config configs/portfolio_medium_catboost_v3.yaml
+```
+
+Recompute a new ensemble from cached fold predictions without retraining base models:
+
+```bash
+uv run python scripts/reblend_walkforward.py \
+  --config configs/portfolio_medium_catboost_v4.yaml \
+  --source-run artifacts/<existing_run_dir>
 ```
 
 Run a light local smoke-test backtest before you spend laptop time or Colab time on the full configuration:
@@ -139,6 +174,9 @@ uv run --extra dev ruff check .
 Heavy runs are better documented now for cloud offload too:
 
 - local smoke test: `configs/local_smoke.yaml`
+- medium portfolio run: `configs/portfolio_medium.yaml`
+- XGBoost comparison: `configs/portfolio_medium_xgb.yaml`
+- tuned CatBoost comparisons: `configs/portfolio_medium_catboost_v2.yaml`, `v3`, `v4`
 - full backtest handoff notes: `docs/COLAB.md`
 
 ## Validation Philosophy
@@ -184,6 +222,10 @@ During long runs, the backtest also writes progress checkpoints so interrupted r
 
 Final ensemble fitting also snapshots the saved production bundle into a run directory for traceability.
 
+The reblend workflow can reuse those cached fold checkpoints to test new ensemble weights much
+faster than a full retrain. That lets you iterate on blending logic while keeping the underlying
+model predictions fixed.
+
 ## CORR and MMC
 
 CORR is the rank-style correlation between predictions and Numerai targets. This repo directly optimizes for a CORR-like modeling setup and evaluates per-era Spearman correlation as a practical proxy.
@@ -219,6 +261,6 @@ They belong in `.env`. The script validates their presence and never prints the 
 ## Next Up
 
 - Add richer target support if Numerai exposes multiple trainable targets in the chosen dataset version.
-- Add parameter sweeps with artifact-level experiment comparison.
+- Add a small experiment registry that records source runs, reblends, and best-known configurations.
 - Add live round tracking and historical submission monitoring.
-- Add feature clustering or model diversification diagnostics.
+- Add stronger neural-tabular experiments beyond the first MLX MLP lane if they justify the complexity.

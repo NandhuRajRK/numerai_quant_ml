@@ -22,6 +22,7 @@ from numerai_quant.ensemble import (
     save_ensemble_bundle,
 )
 from numerai_quant.features import (
+    apply_feature_controls,
     detect_feature_columns,
     ensure_identifier_column,
     make_prediction_frame,
@@ -146,8 +147,10 @@ def run_walk_forward_backtest(
     oof_prediction_frames: list[pd.DataFrame] = []
     final_report_frames: list[pd.DataFrame] = []
     fold_rows: list[dict[str, float | int | str]] = []
+    feature_selection_rows: list[dict[str, Any]] = []
     neutralization_cfg = dict(config.raw["advanced"]["neutralization"])
     use_neutralization = bool(neutralization_cfg["enabled"])
+    feature_control_cfg = dict(config.raw.get("feature_selection", {}))
     total_folds = len(folds)
     _write_partial_artifacts(
         run_dir=run_dir,
@@ -176,7 +179,19 @@ def run_walk_forward_backtest(
         )
         train_split = train_df[train_df[config.era_col].isin(fold.train_eras)].copy()
         valid_split = train_df[train_df[config.era_col].isin(fold.validation_eras)].copy()
-        X_train = train_split[feature_cols]
+        model_feature_cols, feature_summary = apply_feature_controls(
+            train_split,
+            feature_cols,
+            target_col=config.target_col,
+            config=feature_control_cfg,
+        )
+        feature_selection_rows.append(
+            {
+                "fold": fold.fold_number,
+                **feature_summary,
+            }
+        )
+        X_train = train_split[model_feature_cols]
         y_train = train_split[config.target_col]
 
         raw_valid_predictions: dict[str, Any] = {}
@@ -186,13 +201,17 @@ def run_walk_forward_backtest(
 
         for spec in specs:
             LOGGER.info(
-                "Fold %s/%s | fitting %s",
+                "Fold %s/%s | fitting %s with %s features",
                 fold.fold_number,
                 total_folds,
                 spec["name"],
+                len(model_feature_cols),
             )
             model = fit_model(spec, X_train, y_train)
-            raw_valid_predictions[spec["name"]] = raw_predict(model, valid_split[feature_cols])
+            raw_valid_predictions[spec["name"]] = raw_predict(
+                model,
+                valid_split[model_feature_cols],
+            )
             prediction_frame = make_prediction_frame(
                 valid_split[config.id_col],
                 raw_valid_predictions[spec["name"]],
@@ -339,6 +358,11 @@ def run_walk_forward_backtest(
     save_dataframe(oof_frame, run_dir / "oof_predictions.parquet")
     save_dataframe(fold_metrics, run_dir / "fold_metrics.csv")
     save_dataframe(leaderboard, run_dir / "model_leaderboard.csv")
+    if feature_selection_rows:
+        save_dataframe(
+            pd.DataFrame(feature_selection_rows),
+            run_dir / "feature_selection_summary.csv",
+        )
     feature_exposure_frame = (
         final_report["feature_exposure"]
         .rename("abs_exposure")
@@ -402,23 +426,39 @@ def train_final_ensemble(
         id_col=config.id_col,
     )
     feature_cols = detect_feature_columns(training_df)
+    model_feature_cols, feature_summary = apply_feature_controls(
+        training_df,
+        feature_cols,
+        target_col=config.target_col,
+        config=dict(config.raw.get("feature_selection", {})),
+    )
     specs = enabled_model_specs(config)
     models = {
-        spec["name"]: fit_model(spec, training_df[feature_cols], training_df[config.target_col])
+        spec["name"]: fit_model(
+            spec,
+            training_df[model_feature_cols],
+            training_df[config.target_col],
+        )
         for spec in specs
     }
 
-    bundle_dir = save_ensemble_bundle(models, feature_cols, config, artifact_name=artifact_name)
+    bundle_dir = save_ensemble_bundle(
+        models,
+        model_feature_cols,
+        config,
+        artifact_name=artifact_name,
+    )
     run_dir = init_run_directory(
         config.path("artifacts_dir"),
         create_run_name(config, prefix="finalfit"),
     )
     shutil.copytree(bundle_dir, run_dir / "models" / bundle_dir.name, dirs_exist_ok=True)
     save_yaml(config.raw, run_dir / "run_config.yaml")
+    save_json(feature_summary, run_dir / "feature_selection_summary.json")
     return {
         "bundle_dir": bundle_dir,
         "run_dir": run_dir,
-        "feature_cols": feature_cols,
+        "feature_cols": model_feature_cols,
     }
 
 

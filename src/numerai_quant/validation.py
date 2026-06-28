@@ -62,7 +62,14 @@ def build_walk_forward_folds(
 
     if max_folds is not None and len(folds) > max_folds:
         folds = folds[-max_folds:]
-    return folds
+    return [
+        WalkForwardFold(
+            fold_number=index,
+            train_eras=fold.train_eras,
+            validation_eras=fold.validation_eras,
+        )
+        for index, fold in enumerate(folds, start=1)
+    ]
 
 
 def feature_exposure(

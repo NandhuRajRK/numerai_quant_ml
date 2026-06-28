@@ -18,6 +18,8 @@ dependencies = [
 
 [project.optional-dependencies]
 xgboost = ["xgboost>=2.0.0"]
+catboost = ["catboost>=1.2.0"]
+mlx = ["mlx>=0.29.2"]
 dev = [
     "pytest>=8.0.0",
     "ruff>=0.6.0",

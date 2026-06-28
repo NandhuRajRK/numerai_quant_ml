@@ -14,6 +14,7 @@ import yaml
 
 from numerai_quant.config import PipelineConfig
 from numerai_quant.features import make_prediction_frame
+from numerai_quant.mlx_models import MLXTabularMLPRegressor
 from numerai_quant.utils import ensure_directories, require_columns
 
 LOGGER = logging.getLogger(__name__)
@@ -43,6 +44,17 @@ def _xgboost_regressor() -> Any:
     return module.XGBRegressor
 
 
+def _catboost_regressor() -> Any:
+    """Import CatBoost lazily so the project still works without the extra."""
+    module = importlib.import_module("catboost")
+    return module.CatBoostRegressor
+
+
+def _mlx_mlp_regressor() -> type[MLXTabularMLPRegressor]:
+    """Return the MLX MLP wrapper class."""
+    return MLXTabularMLPRegressor
+
+
 def create_model(spec: dict[str, Any]) -> Any:
     """Instantiate a model from a config spec."""
     model_type = spec["type"]
@@ -51,6 +63,10 @@ def create_model(spec: dict[str, Any]) -> Any:
         return lgb.LGBMRegressor(**params)
     if model_type == "xgboost":
         return _xgboost_regressor()(**params)
+    if model_type == "catboost":
+        return _catboost_regressor()(**params)
+    if model_type == "mlx_mlp":
+        return _mlx_mlp_regressor()(**params)
     raise ValueError(f"Unsupported model type: {model_type}")
 
 
@@ -83,6 +99,10 @@ def save_model_file(model: Any, spec: dict[str, Any], model_path: Path) -> Path:
     if spec["type"] == "lightgbm":
         model.booster_.save_model(str(model_path))
     elif spec["type"] == "xgboost":
+        model.save_model(str(model_path))
+    elif spec["type"] == "catboost":
+        model.save_model(str(model_path))
+    elif spec["type"] == "mlx_mlp":
         model.save_model(str(model_path))
     else:  # pragma: no cover - guarded by create_model
         raise ValueError(f"Unsupported model type: {spec['type']}")
@@ -119,7 +139,13 @@ def save_ensemble_bundle(
         "weights": weights,
     }
     for spec in specs:
-        extension = "txt" if spec["type"] == "lightgbm" else "json"
+        extension_map = {
+            "lightgbm": "txt",
+            "xgboost": "json",
+            "catboost": "cbm",
+            "mlx_mlp": "mlx",
+        }
+        extension = extension_map[spec["type"]]
         model_filename = f"{spec['name']}.{extension}"
         save_model_file(models[spec["name"]], spec, bundle_dir / model_filename)
         metadata["model_specs"].append(
@@ -155,6 +181,12 @@ def load_ensemble_bundle(bundle_dir: Path) -> tuple[dict[str, Any], dict[str, An
             model = _xgboost_regressor()()
             model.load_model(str(model_path))
             models[spec["name"]] = model
+        elif spec["type"] == "catboost":
+            model = _catboost_regressor()()
+            model.load_model(str(model_path))
+            models[spec["name"]] = model
+        elif spec["type"] == "mlx_mlp":
+            models[spec["name"]] = _mlx_mlp_regressor().load_model(str(model_path))
         else:  # pragma: no cover - guarded by metadata generation
             raise ValueError(f"Unsupported model type in metadata: {spec['type']}")
     return models, metadata
