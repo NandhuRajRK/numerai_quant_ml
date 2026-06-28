@@ -6,6 +6,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .ipynb_checkpoints/
+catboost_info/
 
 # Numerai data and generated artifacts
 data/raw/*

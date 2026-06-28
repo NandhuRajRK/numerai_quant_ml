@@ -1,55 +1,77 @@
 # numerai-quant-ml
 
-Portfolio-grade Numerai Tournament research and live prediction pipeline. This repo is designed to show quant ML judgment and ML engineering discipline: time-aware validation, multi-model ensembling, Numerai-specific neutralization, reproducible run artifacts, and a safe submission workflow.
+This is a Numerai project for learning and experimentation.
 
-This project is for learning, experimentation, and portfolio use only. It does not include staking logic, does not ship real secrets, does not claim profitability, and is not trading advice.
+The repo does four main things:
+
+1. downloads Numerai tournament data
+2. runs era-aware backtests
+3. trains and compares a few model families
+4. generates live predictions and supports dry-run submission
+
+I built it to be a serious applied ML project, not just a notebook. That means the code is split into reusable modules, experiments are config-driven, long runs leave artifacts behind, and there is a clear path from backtest to live prediction.
+
+This repo does not include staking logic, real secrets, profitability claims, or trading advice.
 
 ## What Numerai Is
 
-Numerai is a hedge-fund-backed data science tournament where participants train models on obfuscated market features and submit live predictions. You never see raw tickers or traditional price series. That makes it a strong sandbox for practicing noisy supervised learning, temporal validation, model stability analysis, and live ML operations.
+Numerai is a data science tournament built around obfuscated market data. You get a large tabular dataset with anonymous features, a target to predict, and a live submission workflow. You never see the underlying tickers or raw market series.
 
-## What Makes This Repo Stronger Than a Baseline
+That makes it a good setting for practicing:
 
-- Walk-forward era validation instead of one static split.
-- Multi-model ensemble with configurable weights.
-- Optional XGBoost support through a `uv` extra.
-- Optional CatBoost and MLX-based neural experiments through `uv` extras.
-- Feature-neutralized post-processing to reduce raw feature exposure.
-- Fast reblend workflow for testing new ensemble weights without retraining base models.
-- Run artifact bundles with metrics, plots, leaderboards, predictions, configs, and reports.
-- Stable saved ensemble bundle for live prediction generation.
-- Dry-run-first submission flow that refuses to run without environment credentials.
+- tabular modeling
+- temporal validation
+- ensembling
+- robustness checks
+- experiment tracking
+- ML workflow engineering
 
-## Best Observed Medium Run
+## What This Repo Actually Does
 
-The strongest result produced during local experimentation so far came from a tuned CatBoost-heavy
-medium run plus a no-retrain reblend over cached fold predictions:
+The project started with a simple LightGBM baseline, then expanded into a small model-comparison workflow.
+
+At this point it supports:
+
+- LightGBM
+- XGBoost
+- CatBoost
+- an MLX-based MLP experiment path for Apple Silicon
+- post-prediction neutralization
+- walk-forward backtesting by era
+- cached reblending of saved fold predictions so you can test new ensemble weights without retraining base models
+
+## Best Result So Far
+
+The best medium-scale result so far came from a tuned CatBoost-heavy setup plus a reblend step over cached fold predictions.
 
 - `ensemble mean_corr`: `0.081136`
 - `ensemble sharpe_like`: `0.979448`
 - `catboost_optional mean_corr`: `0.079392`
 - `lgbm_main mean_corr`: `0.070495`
 
-Curated sample artifacts from that run live in
-[`docs/sample_artifacts/best_medium_reblend/`](docs/sample_artifacts/best_medium_reblend/).
-This is still a backtest, not a claim about live profitability.
+Those artifacts are copied into:
 
-## Repository Structure
+- [docs/sample_artifacts/best_medium_reblend/summary.json](/Users/nandhuraj/Repository/Numerai/docs/sample_artifacts/best_medium_reblend/summary.json)
+- [docs/sample_artifacts/best_medium_reblend/model_leaderboard.csv](/Users/nandhuraj/Repository/Numerai/docs/sample_artifacts/best_medium_reblend/model_leaderboard.csv)
+- [docs/sample_artifacts/best_medium_reblend/report.md](/Users/nandhuraj/Repository/Numerai/docs/sample_artifacts/best_medium_reblend/report.md)
+
+That is still a backtest result, not evidence of live profitability.
+
+## Repo Layout
 
 ```text
-configs/                  Project and model configuration
-data/                     Ignored raw data and prediction outputs
-models/                   Ignored saved baseline and ensemble bundles
-artifacts/                Ignored run-by-run research outputs
-reports/                  Optional generated reports
-notebooks/                Lightweight EDA and inspection notebook
+configs/                  Experiment configs
+data/                     Ignored raw data and predictions
+models/                   Ignored saved model bundles
+artifacts/                Ignored run outputs
+notebooks/                EDA / scratch work
 scripts/                  CLI entry points
-src/numerai_quant/        Reusable package code
-tests/                    Unit tests for metrics, format, and validation logic
-.github/workflows/        CI for lint and tests
+src/numerai_quant/        Package code
+tests/                    Unit tests
+docs/                     Notes and curated sample artifacts
 ```
 
-## Setup With uv
+## Setup
 
 ```bash
 cd numerai-quant-ml
@@ -57,70 +79,53 @@ uv sync --extra dev
 cp .env.example .env
 ```
 
-To enable XGBoost in the advanced model zoo:
+Optional extras:
 
 ```bash
 uv sync --extra dev --extra xgboost
-```
-
-To enable CatBoost or MLX experiments:
-
-```bash
 uv sync --extra dev --extra catboost
 uv sync --extra dev --extra mlx
 ```
 
-## Core Commands
+## Common Commands
 
-Download only the train parquet first. This is the default because the backtest only needs train data:
+Download only the training parquet:
 
 ```bash
 uv run python scripts/download_data.py
 ```
 
-Download train first, then validation and live:
+Download train, validation, and live:
 
 ```bash
 uv run python scripts/download_data.py --all
 ```
 
-Download train first, then fetch validation and live in parallel:
+Smoke-test the pipeline:
 
 ```bash
-uv run python scripts/download_data.py --all --parallel-secondary
+uv run python scripts/backtest_walkforward.py --config configs/local_smoke.yaml
 ```
 
-Download only the live parquet when you are ready to generate predictions:
+Run the original full backtest config:
 
 ```bash
-uv run python scripts/download_data.py --live-only
+uv run python scripts/backtest_walkforward.py --config configs/baseline.yaml
 ```
 
-Train the original LightGBM baseline:
+Run the medium config:
 
 ```bash
-uv run python scripts/train_baseline.py
+uv run python scripts/backtest_walkforward.py --config configs/portfolio_medium.yaml
 ```
 
-Validate the original baseline on the validation parquet:
-
-```bash
-uv run python scripts/validate_baseline.py
-```
-
-Run the advanced walk-forward backtest across the model zoo:
-
-```bash
-uv run python scripts/backtest_walkforward.py
-```
-
-Run the current strongest tuned medium config:
+Run the tuned CatBoost config that produced the strongest standalone model:
 
 ```bash
 uv run python scripts/backtest_walkforward.py --config configs/portfolio_medium_catboost_v3.yaml
 ```
 
-Recompute a new ensemble from cached fold predictions without retraining base models:
+Reblend cached fold predictions without retraining:
 
 ```bash
 uv run python scripts/reblend_walkforward.py \
@@ -128,139 +133,122 @@ uv run python scripts/reblend_walkforward.py \
   --source-run artifacts/<existing_run_dir>
 ```
 
-Run a light local smoke-test backtest before you spend laptop time or Colab time on the full configuration:
-
-```bash
-uv run python scripts/backtest_walkforward.py --config configs/local_smoke.yaml
-```
-
-Train the final ensemble bundle for live use:
+Train the final saved bundle:
 
 ```bash
 uv run python scripts/train_ensemble.py
 ```
 
-Generate live predictions from the advanced ensemble bundle:
+Generate live predictions:
 
 ```bash
 uv run python scripts/predict_live.py
 ```
 
-Run the full portfolio workflow in one command:
-
-```bash
-uv run python scripts/run_portfolio_pipeline.py
-```
-
-Dry-run submit a prediction file:
+Dry-run a submission:
 
 ```bash
 uv run python scripts/submit_predictions.py data/predictions/live_predictions_<round>.csv
 ```
 
-Actually upload predictions:
+Actually submit:
 
 ```bash
 uv run python scripts/submit_predictions.py data/predictions/live_predictions_<round>.csv --submit
 ```
 
-Run quality checks:
+Checks:
 
 ```bash
-uv run --extra dev pytest
+uv run --extra dev python -m pytest
 uv run --extra dev ruff check .
 ```
 
-Heavy runs are better documented now for cloud offload too:
+## How Validation Works
 
-- local smoke test: `configs/local_smoke.yaml`
-- medium portfolio run: `configs/portfolio_medium.yaml`
-- XGBoost comparison: `configs/portfolio_medium_xgb.yaml`
-- tuned CatBoost comparisons: `configs/portfolio_medium_catboost_v2.yaml`, `v3`, `v4`
-- full backtest handoff notes: `docs/COLAB.md`
+The important part of the project is not the specific model class. It is the validation setup.
 
-## Validation Philosophy
+Numerai data comes with an `era` column. We treat that as a time-like grouping and backtest in a walk-forward way:
 
-Numerai data is organized into eras, which act like time slices. This repo treats time structure seriously.
+- train on earlier eras
+- leave an embargo gap
+- validate on later eras
+- repeat for several folds
 
-The advanced research workflow:
+For each model and ensemble, the repo computes:
 
-- builds walk-forward folds with a minimum training window;
-- applies an era embargo before each validation block;
-- evaluates each model and the ensemble on unseen future eras;
-- summarizes stability with mean CORR, standard deviation, Sharpe-like score, max drawdown, and feature exposure.
+- era-wise Spearman correlation
+- mean correlation
+- correlation standard deviation
+- a Sharpe-like `mean / std` score
+- a simple drawdown-style diagnostic
+- feature exposure diagnostics
 
-This is not the same as live performance, but it is much more credible than a random split or a single static validation pass.
+This is still backtesting, but it is much more believable than a random split.
 
-## Ensemble and Neutralization
+## What “Neutralization” Means Here
 
-The advanced pipeline trains a configurable model zoo from `configs/baseline.yaml`, blends raw predictions with explicit weights, then optionally neutralizes the ensemble against the most exposed features.
+After blending predictions, the repo can neutralize the output against the most exposed features. This is a simple practical version of a common Numerai idea: reduce how strongly your prediction is tied to a small set of feature directions.
 
-This does not pretend to fully solve MMC or guarantee better tournament performance. The point is to show you understand how to build a stronger signal stack and how to talk about Numerai-specific tradeoffs in a technically honest way.
+It is useful as an experiment, but it is not magic. Sometimes it helps, sometimes it just lowers the score.
 
-## Artifacts
+## What The Artifacts Look Like
 
-Each advanced backtest creates an ignored artifact run directory containing:
+Each run writes a directory under `artifacts/` with files like:
 
 - `summary.json`
 - `fold_metrics.csv`
 - `model_leaderboard.csv`
 - `oof_predictions.parquet`
 - `feature_exposure.csv`
-- `plots/cumulative_corr.png`
-- `plots/era_corr_histogram.png`
-- `plots/model_comparison.png`
 - `report.md`
+- plot images
 
-During long runs, the backtest also writes progress checkpoints so interrupted runs still leave breadcrumbs:
+Long runs also write partial outputs and checkpoints so interrupted jobs still leave something behind.
 
-- `status.json`
-- `fold_metrics.partial.csv`
-- `model_leaderboard.partial.csv`
-- `oof_predictions.partial.parquet`
-- `checkpoints/fold_XX_progress.parquet`
+The reblend workflow reuses saved fold prediction checkpoints and regenerates ensemble metrics and plots from them. That is useful when you want to try new weights without paying to retrain every base model.
 
-Final ensemble fitting also snapshots the saved production bundle into a run directory for traceability.
+## What I Learned From The Experiments
 
-The reblend workflow can reuse those cached fold checkpoints to test new ensemble weights much
-faster than a full retrain. That lets you iterate on blending logic while keeping the underlying
-model predictions fixed.
+The rough progression looked like this:
 
-## CORR and MMC
+- LightGBM baseline was solid
+- XGBoost improved the ensemble
+- early CatBoost settings were bad
+- a tuned CatBoost setup ended up beating the earlier XGBoost result
+- aggressive feature filtering hurt performance
+- reblending saved fold predictions was worth implementing because it sped up ensemble iteration immediately
 
-CORR is the rank-style correlation between predictions and Numerai targets. This repo directly optimizes for a CORR-like modeling setup and evaluates per-era Spearman correlation as a practical proxy.
-
-MMC measures how much unique signal a model contributes beyond Numerai's meta-model. This repo does not fully optimize MMC, but the ensemble and neutralization layers make the project much more relevant to that discussion than a plain baseline.
+That last point matters: some of the best improvement in this repo came from better experiment workflow, not just swapping models.
 
 ## Environment Variables
 
-The submission script expects:
+Submission uses:
 
 - `NUMERAI_PUBLIC_ID`
 - `NUMERAI_SECRET_KEY`
 - `NUMERAI_MODEL_ID`
 
-They belong in `.env`. The script validates their presence and never prints the secret values.
+Put them in `.env`. The submission script refuses to run if they are missing.
 
 ## Assumptions
 
-- Dataset download uses the common Numerai `numerapi.download_dataset("<version>/<file>")` pattern.
-- The default dataset version remains `v5.2` until you update `configs/baseline.yaml`.
-- The advanced workflow uses the train parquet for walk-forward backtesting and can optionally append validation rows when fitting the final live ensemble.
-- XGBoost support is optional and disabled by default so the repo stays runnable from a fresh clone without extra setup.
-- If a prior download was interrupted, `numerapi` will resume from the existing `.temp` file when the destination path is reused.
-- `configs/local_smoke.yaml` is intentionally small and pipeline-focused; it is for robustness checks, not meaningful score chasing.
+- dataset download uses the common `numerapi.download_dataset("<version>/<file>")` pattern
+- default dataset version is still `v5.2` in the configs here
+- the project is aimed at Python `3.12`
+- optional model families stay behind `uv` extras so a fresh clone stays easy to install
 
 ## Limitations
 
-- Walk-forward validation is stronger than a single split, but it is still backtesting.
-- Neutralization here is intentionally simple and not a full Numerai research stack.
-- No staking, capital allocation, or trading layer is included.
-- Live tracking and model registry integration are left as next steps.
+- everything here is still backtesting
+- the neutralization logic is intentionally simple
+- no staking or capital allocation layer is included
+- no live monitoring dashboard is included
+- the neural model lane is still experimental
 
-## Next Up
+## Next Things I’d Add
 
-- Add richer target support if Numerai exposes multiple trainable targets in the chosen dataset version.
-- Add a small experiment registry that records source runs, reblends, and best-known configurations.
-- Add live round tracking and historical submission monitoring.
-- Add stronger neural-tabular experiments beyond the first MLX MLP lane if they justify the complexity.
+- a small experiment registry instead of just artifact directories
+- cleaner cached prediction reuse across more experiment types
+- a more serious neural tabular model if the MLX MLP shows promise
+- live round tracking and historical submission monitoring
