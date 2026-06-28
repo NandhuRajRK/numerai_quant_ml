@@ -28,3 +28,17 @@ def test_era_correlations_and_summary_helpers() -> None:
     assert correlations.loc["era2"] == pytest.approx(-1.0)
     assert sharpe_like(correlations) == 0.0
     assert max_drawdown(correlations) == pytest.approx(-1.0)
+
+
+def test_era_correlations_preserve_input_order() -> None:
+    frame = pd.DataFrame(
+        {
+            "era": ["0010", "0010", "0002", "0002"],
+            "target": [0.1, 0.9, 0.9, 0.1],
+            "prediction": [0.2, 0.8, 0.3, 0.7],
+        }
+    )
+
+    correlations = era_correlations(frame)
+
+    assert correlations.index.tolist() == ["0010", "0002"]

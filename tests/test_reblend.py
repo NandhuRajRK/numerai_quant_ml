@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from numerai_quant.config import load_config
-from numerai_quant.reblend import optimize_cached_blend_weights
+from numerai_quant.reblend import optimize_cached_blend_weights, split_selection_holdout_frames
 
 
 def test_optimize_cached_blend_weights_prefers_stronger_model() -> None:
@@ -54,3 +54,12 @@ def test_optimize_cached_blend_weights_returns_ranked_candidates() -> None:
     assert set(weights) == {"model_a", "model_b", "model_c"}
     assert "objective_value" in leaderboard.columns
     assert int(leaderboard.iloc[0]["candidate_rank"]) == 1
+
+
+def test_split_selection_holdout_frames_reserves_latest_folds() -> None:
+    frames = [pd.DataFrame({"fold": [index]}) for index in range(1, 6)]
+
+    selection, holdout = split_selection_holdout_frames(frames, holdout_folds=2)
+
+    assert [frame["fold"].iloc[0] for frame in selection] == [1, 2, 3]
+    assert [frame["fold"].iloc[0] for frame in holdout] == [4, 5]

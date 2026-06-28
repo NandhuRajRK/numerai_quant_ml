@@ -28,6 +28,20 @@ def test_prediction_validation_rejects_out_of_range_values() -> None:
         validate_prediction_frame(frame)
 
 
+def test_prediction_validation_rejects_missing_ids() -> None:
+    frame = pd.DataFrame({"id": ["a", None], "prediction": [0.2, 0.8]})
+
+    with pytest.raises(ValueError, match="missing ids"):
+        validate_prediction_frame(frame)
+
+
+def test_prediction_validation_rejects_missing_prediction_column() -> None:
+    frame = pd.DataFrame({"id": ["a"]})
+
+    with pytest.raises(ValueError, match="missing required columns"):
+        validate_prediction_frame(frame)
+
+
 def test_ensure_identifier_column_uses_named_index() -> None:
     frame = pd.DataFrame({"feature_x": [1, 2]}, index=pd.Index(["a", "b"], name="id"))
 
