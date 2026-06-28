@@ -1,6 +1,6 @@
 # numerai-quant-ml
 
-A reproducible quant-ML research pipeline for Numerai-style cross-sectional prediction, with era-aware validation, tree ensembles, neutralization, cached reblending, and live submission support.
+A reproducible offline Numerai-style quant-ML benchmark and research pipeline for cross-sectional prediction, with era-aware validation, tree ensembles, neutralization, and cached reblending.
 
 The repo does four main things:
 
@@ -35,14 +35,14 @@ At this point it supports:
 - LightGBM
 - XGBoost
 - CatBoost
-- an MLX-based MLP experiment path for Apple Silicon
+- an experimental MLX-based MLP path for Apple Silicon
 - post-prediction neutralization
 - walk-forward backtesting by era
 - cached reblending of saved fold predictions so you can test new ensemble weights without retraining base models
 
-## Best Result So Far
+## Sample Medium-Scale Result
 
-The best medium-scale result so far came from a tuned CatBoost-heavy setup plus a reblend step over cached fold predictions.
+The current curated sample result comes from a tuned CatBoost-heavy setup plus a reblend step over cached fold predictions.
 
 - `ensemble mean_corr`: `0.081136`
 - `ensemble sharpe_like`: `0.979448`
@@ -58,6 +58,8 @@ Those artifacts are copied into:
 That is still a backtest result, not evidence of live profitability.
 
 This is a medium-scale experiment intended as a lightweight, reproducible sample. The curated sample run uses `12` validation eras. Separate benchmark configs expand the walk-forward window to `60` validation eras for broader evaluation.
+
+For a broader benchmark-oriented artifact, see [docs/benchmark_60_eras/report.md](docs/benchmark_60_eras/report.md).
 
 ### Sample Results
 
@@ -168,6 +170,18 @@ uv run python scripts/reblend_walkforward.py \
   --optimize-weights \
   --objective mean_corr \
   --grid-step 0.05
+```
+
+Reserve the latest folds as untouched holdout folds during weight search:
+
+```bash
+uv run python scripts/reblend_walkforward.py \
+  --config configs/strong_benchmark_catboost.yaml \
+  --source-run artifacts/<existing_run_dir> \
+  --optimize-weights \
+  --objective mean_corr \
+  --grid-step 0.05 \
+  --holdout-folds 3
 ```
 
 Train the final saved bundle:
@@ -328,7 +342,7 @@ Put them in `.env`. The submission script refuses to run if they are missing.
 - the neutralization logic is intentionally simple
 - no staking or capital allocation layer is included
 - no live monitoring dashboard is included
-- the neural model lane is still experimental
+- the MLX neural model lane is still experimental and is not the main benchmark claim
 
 ## Next Things I’d Add
 
