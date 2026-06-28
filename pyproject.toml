@@ -1,7 +1,7 @@
 [project]
 name = "numerai-quant-ml"
 version = "0.1.0"
-description = "Beginner-to-intermediate Numerai Tournament quant ML pipeline."
+description = "Reproducible Numerai quant-ML research pipeline with era-aware validation, tree ensembles, neutralization, and live prediction support."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [

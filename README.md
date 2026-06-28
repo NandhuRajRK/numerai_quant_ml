@@ -1,6 +1,6 @@
 # numerai-quant-ml
 
-This is a Numerai project for learning and experimentation.
+A reproducible quant-ML research pipeline for Numerai-style cross-sectional prediction, with era-aware validation, tree ensembles, neutralization, cached reblending, and live submission support.
 
 The repo does four main things:
 
@@ -9,7 +9,7 @@ The repo does four main things:
 3. trains and compares a few model families
 4. generates live predictions and supports dry-run submission
 
-I built it to be a serious applied ML project, not just a notebook. That means the code is split into reusable modules, experiments are config-driven, long runs leave artifacts behind, and there is a clear path from backtest to live prediction.
+It is built as a real applied ML workflow rather than a notebook-only project. The code is split into reusable modules, experiments are config-driven, long runs leave artifacts behind, and there is a clear path from backtest to live prediction.
 
 This repo does not include staking logic, real secrets, profitability claims, or trading advice.
 
@@ -51,11 +51,24 @@ The best medium-scale result so far came from a tuned CatBoost-heavy setup plus 
 
 Those artifacts are copied into:
 
-- [docs/sample_artifacts/best_medium_reblend/summary.json](/Users/nandhuraj/Repository/Numerai/docs/sample_artifacts/best_medium_reblend/summary.json)
-- [docs/sample_artifacts/best_medium_reblend/model_leaderboard.csv](/Users/nandhuraj/Repository/Numerai/docs/sample_artifacts/best_medium_reblend/model_leaderboard.csv)
-- [docs/sample_artifacts/best_medium_reblend/report.md](/Users/nandhuraj/Repository/Numerai/docs/sample_artifacts/best_medium_reblend/report.md)
+- [summary.json](docs/sample_artifacts/best_medium_reblend/summary.json)
+- [model_leaderboard.csv](docs/sample_artifacts/best_medium_reblend/model_leaderboard.csv)
+- [report.md](docs/sample_artifacts/best_medium_reblend/report.md)
 
 That is still a backtest result, not evidence of live profitability.
+
+This is a medium-scale experiment intended as a lightweight, reproducible sample. The curated sample run uses `12` validation eras. Separate benchmark configs expand the walk-forward window to `60` validation eras for broader evaluation.
+
+### Sample Results
+
+| Model | Mean CORR | Sharpe-like |
+| --- | ---: | ---: |
+| ensemble | 0.081136 | 0.979448 |
+| ensemble_neutralized | 0.080321 | 0.966310 |
+| catboost_optional | 0.079392 | 0.928660 |
+| lgbm_main | 0.070495 | 1.045938 |
+
+![Cumulative correlation from the sample medium run](docs/sample_artifacts/best_medium_reblend/cumulative_corr.png)
 
 ## Repo Layout
 
@@ -125,12 +138,36 @@ Run the tuned CatBoost config that produced the strongest standalone model:
 uv run python scripts/backtest_walkforward.py --config configs/portfolio_medium_catboost_v3.yaml
 ```
 
+Run the stronger benchmark CatBoost config with `60` validation eras:
+
+```bash
+uv run python scripts/backtest_walkforward.py --config configs/strong_benchmark_catboost.yaml
+```
+
+Run the stronger benchmark MLX config with `60` validation eras:
+
+```bash
+uv sync --extra dev --extra mlx
+uv run python scripts/backtest_walkforward.py --config configs/strong_benchmark_mlx_mlp.yaml
+```
+
 Reblend cached fold predictions without retraining:
 
 ```bash
 uv run python scripts/reblend_walkforward.py \
   --config configs/portfolio_medium_catboost_v4.yaml \
   --source-run artifacts/<existing_run_dir>
+```
+
+Optimize blend weights from cached fold predictions:
+
+```bash
+uv run python scripts/reblend_walkforward.py \
+  --config configs/strong_benchmark_catboost.yaml \
+  --source-run artifacts/<existing_run_dir> \
+  --optimize-weights \
+  --objective mean_corr \
+  --grid-step 0.05
 ```
 
 Train the final saved bundle:
@@ -164,6 +201,47 @@ uv run --extra dev python -m pytest
 uv run --extra dev ruff check .
 ```
 
+## Reproducibility
+
+Fresh environment:
+
+```bash
+uv sync --extra dev
+```
+
+Optional model extras:
+
+```bash
+uv sync --extra dev --extra catboost
+uv sync --extra dev --extra xgboost
+uv sync --extra dev --extra mlx
+```
+
+Reproduce the sample medium-scale artifact:
+
+```bash
+uv run python scripts/download_data.py --train-only
+uv run python scripts/backtest_walkforward.py --config configs/portfolio_medium_catboost_v3.yaml
+uv run python scripts/reblend_walkforward.py \
+  --config configs/portfolio_medium_catboost_v4.yaml \
+  --source-run artifacts/<source_run_dir> \
+  --optimize-weights \
+  --objective mean_corr \
+  --grid-step 0.05
+```
+
+Run the stronger benchmark path:
+
+```bash
+uv run python scripts/backtest_walkforward.py --config configs/strong_benchmark_catboost.yaml
+uv run python scripts/reblend_walkforward.py \
+  --config configs/strong_benchmark_catboost.yaml \
+  --source-run artifacts/<source_run_dir> \
+  --optimize-weights \
+  --objective mean_corr \
+  --grid-step 0.05
+```
+
 ## How Validation Works
 
 The important part of the project is not the specific model class. It is the validation setup.
@@ -185,6 +263,12 @@ For each model and ensemble, the repo computes:
 - feature exposure diagnostics
 
 This is still backtesting, but it is much more believable than a random split.
+
+As a rule of thumb in this repo:
+
+- `8-12` validation eras: smoke or development runs
+- `12-24` validation eras: medium experiments and sample artifacts
+- `40-80+` validation eras: stronger public-facing benchmarks
 
 ## What “Neutralization” Means Here
 
