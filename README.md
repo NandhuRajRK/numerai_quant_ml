@@ -1,4 +1,4 @@
-# numerai-quant-ml
+# Numerai-Quant-ML
 
 A reproducible offline Numerai-style quant-ML benchmark and research pipeline for cross-sectional prediction, with era-aware validation, tree ensembles, neutralization, and cached reblending.
 
