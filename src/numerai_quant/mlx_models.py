@@ -12,6 +12,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from numerai_quant.metrics import era_correlations, spearman_corr
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -29,6 +31,8 @@ class MLXTabularMLPConfig:
 
     hidden_dims: list[int]
     dropout: float
+    activation: str
+    use_layer_norm: bool
     learning_rate: float
     weight_decay: float
     batch_size: int
@@ -36,6 +40,8 @@ class MLXTabularMLPConfig:
     patience: int
     validation_fraction: float
     random_seed: int
+    input_noise_std: float
+    validation_metric: str
 
 
 class _TabularMLPNet:
@@ -48,14 +54,21 @@ class _TabularMLPNet:
         self._config = config
         dims = [input_dim, *config.hidden_dims, 1]
         layers: list[Any] = []
+        activation_map = {
+            "gelu": nn.GELU,
+            "relu": nn.ReLU,
+            "silu": nn.SiLU,
+        }
+        try:
+            activation_cls = activation_map[config.activation.lower()]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported activation: {config.activation}") from exc
         for in_dim, out_dim in zip(dims[:-2], dims[1:-1], strict=False):
-            layers.extend(
-                [
-                    nn.Linear(in_dim, out_dim),
-                    nn.GELU(),
-                    nn.Dropout(config.dropout),
-                ]
-            )
+            layers.append(nn.Linear(in_dim, out_dim))
+            if config.use_layer_norm:
+                layers.append(nn.LayerNorm(out_dim))
+            layers.append(activation_cls())
+            layers.append(nn.Dropout(config.dropout))
         layers.append(nn.Linear(dims[-2], dims[-1]))
         self.model = nn.Sequential(*layers)
 
@@ -86,6 +99,8 @@ class MLXTabularMLPRegressor:
         *,
         hidden_dims: tuple[int, ...] = (512, 256, 64),
         dropout: float = 0.1,
+        activation: str = "gelu",
+        use_layer_norm: bool = False,
         learning_rate: float = 1e-3,
         weight_decay: float = 1e-4,
         batch_size: int = 4096,
@@ -93,10 +108,14 @@ class MLXTabularMLPRegressor:
         patience: int = 5,
         validation_fraction: float = 0.15,
         random_seed: int = 42,
+        input_noise_std: float = 0.0,
+        validation_metric: str = "mse",
     ) -> None:
         self.config = MLXTabularMLPConfig(
             hidden_dims=list(hidden_dims),
             dropout=float(dropout),
+            activation=str(activation),
+            use_layer_norm=bool(use_layer_norm),
             learning_rate=float(learning_rate),
             weight_decay=float(weight_decay),
             batch_size=int(batch_size),
@@ -104,6 +123,8 @@ class MLXTabularMLPRegressor:
             patience=int(patience),
             validation_fraction=float(validation_fraction),
             random_seed=int(random_seed),
+            input_noise_std=float(input_noise_std),
+            validation_metric=str(validation_metric),
         )
         self.feature_mean_: np.ndarray | None = None
         self.feature_std_: np.ndarray | None = None
@@ -120,7 +141,15 @@ class MLXTabularMLPRegressor:
     def _build_net(self, input_dim: int) -> _TabularMLPNet:
         return _TabularMLPNet(input_dim, self.config)
 
-    def fit(self, X: pd.DataFrame, y: pd.Series) -> MLXTabularMLPRegressor:
+    def fit(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        *,
+        X_valid: pd.DataFrame | None = None,
+        y_valid: pd.Series | None = None,
+        eras_valid: pd.Series | None = None,
+    ) -> MLXTabularMLPRegressor:
         mx, nn, optim = _mlx_modules()
         rng = np.random.default_rng(self.config.random_seed)
 
@@ -133,20 +162,37 @@ class MLXTabularMLPRegressor:
         X_scaled = self._standardize_features(X_np, self.feature_mean_, self.feature_std_)
         y_scaled = ((y_np - self.target_mean_) / self.target_std_).astype(np.float32)
 
-        num_rows = len(X_scaled)
-        indices = np.arange(num_rows)
-        rng.shuffle(indices)
-        valid_size = max(1, int(num_rows * self.config.validation_fraction))
-        valid_idx = indices[:valid_size]
-        train_idx = indices[valid_size:]
-        if len(train_idx) == 0:
-            train_idx = valid_idx
-            valid_idx = indices[:1]
+        if X_valid is not None and y_valid is not None:
+            X_train = X_scaled
+            y_train = y_scaled
+            X_valid_np = np.asarray(X_valid, dtype=np.float32)
+            y_valid_raw = np.asarray(y_valid, dtype=np.float32).reshape(-1)
+            X_valid_scaled = self._standardize_features(
+                X_valid_np,
+                self.feature_mean_,
+                self.feature_std_,
+            )
+            y_valid_scaled = ((y_valid_raw - self.target_mean_) / self.target_std_).astype(
+                np.float32
+            )
+            eras_valid_np = None if eras_valid is None else np.asarray(eras_valid).astype(str)
+        else:
+            num_rows = len(X_scaled)
+            indices = np.arange(num_rows)
+            rng.shuffle(indices)
+            valid_size = max(1, int(num_rows * self.config.validation_fraction))
+            valid_idx = indices[:valid_size]
+            train_idx = indices[valid_size:]
+            if len(train_idx) == 0:
+                train_idx = valid_idx
+                valid_idx = indices[:1]
 
-        X_train = X_scaled[train_idx]
-        y_train = y_scaled[train_idx]
-        X_valid = X_scaled[valid_idx]
-        y_valid = y_scaled[valid_idx]
+            X_train = X_scaled[train_idx]
+            y_train = y_scaled[train_idx]
+            X_valid_scaled = X_scaled[valid_idx]
+            y_valid_scaled = y_scaled[valid_idx]
+            y_valid_raw = y_np[valid_idx]
+            eras_valid_np = None
 
         self.input_dim_ = X_scaled.shape[1]
         self._net = self._build_net(self.input_dim_)
@@ -163,33 +209,63 @@ class MLXTabularMLPRegressor:
         best_loss = float("inf")
         best_weights_path = Path("/tmp") / f"mlx_mlp_best_{id(self)}.safetensors"
         epochs_without_improvement = 0
+        best_score = float("-inf")
+        optimize_for_score = self.config.validation_metric.lower() in {"era_corr", "spearman"}
 
         for epoch in range(self.config.max_epochs):
             self._net.train()
             shuffled = rng.permutation(len(X_train))
             for start in range(0, len(X_train), self.config.batch_size):
                 batch_idx = shuffled[start : start + self.config.batch_size]
-                batch_x = mx.array(X_train[batch_idx])
+                batch_x_np = X_train[batch_idx]
+                if self.config.input_noise_std > 0.0:
+                    batch_x_np = batch_x_np + rng.normal(
+                        loc=0.0,
+                        scale=self.config.input_noise_std,
+                        size=batch_x_np.shape,
+                    ).astype(np.float32)
+                batch_x = mx.array(batch_x_np)
                 batch_y = mx.array(y_train[batch_idx])
                 loss, grads = loss_and_grad_fn(self._net.model, batch_x, batch_y)
                 optimizer.update(self._net.model, grads)
                 mx.eval(loss, self._net.model.parameters(), optimizer.state)
 
-            valid_loss = self._evaluate_loss(X_valid, y_valid)
-            LOGGER.info(
-                "MLX MLP epoch %s/%s | valid_mse=%.6f",
+            valid_metrics = self._evaluate_validation(
+                X_valid_scaled,
+                y_valid_scaled,
+                y_valid_raw,
+                eras_valid_np,
+            )
+            log_message = "MLX MLP epoch %s/%s | valid_mse=%.6f"
+            log_values: list[Any] = [
                 epoch + 1,
                 self.config.max_epochs,
-                valid_loss,
-            )
-            if valid_loss + 1e-6 < best_loss:
-                best_loss = valid_loss
+                valid_metrics["mse"],
+            ]
+            if "score" in valid_metrics:
+                log_message += " | valid_%s=%.6f"
+                log_values.extend(
+                    [self.config.validation_metric.lower(), valid_metrics["score"]]
+                )
+            LOGGER.info(log_message, *log_values)
+
+            if optimize_for_score:
+                score = float(valid_metrics["score"])
+                if score > best_score + 1e-6:
+                    best_score = score
+                    best_loss = float(valid_metrics["mse"])
+                    epochs_without_improvement = 0
+                    self._net.save_weights(str(best_weights_path))
+                else:
+                    epochs_without_improvement += 1
+            elif float(valid_metrics["mse"]) + 1e-6 < best_loss:
+                best_loss = float(valid_metrics["mse"])
                 epochs_without_improvement = 0
                 self._net.save_weights(str(best_weights_path))
             else:
                 epochs_without_improvement += 1
-                if epochs_without_improvement >= self.config.patience:
-                    break
+            if epochs_without_improvement >= self.config.patience:
+                break
 
         if best_weights_path.exists():
             self._net.load_weights(str(best_weights_path))
@@ -198,14 +274,41 @@ class MLXTabularMLPRegressor:
         self._net.eval()
         return self
 
-    def _evaluate_loss(self, X_valid: np.ndarray, y_valid: np.ndarray) -> float:
+    def _evaluate_validation(
+        self,
+        X_valid: np.ndarray,
+        y_valid_scaled: np.ndarray,
+        y_valid_raw: np.ndarray,
+        eras_valid: np.ndarray | None,
+    ) -> dict[str, float]:
         mx, _, _ = _mlx_modules()
         if self._net is None:
             raise RuntimeError("Model has not been fit.")
         self._net.eval()
         predictions = self._net(mx.array(X_valid)).squeeze(-1)
-        loss = mx.mean((predictions - mx.array(y_valid)) ** 2)
-        return float(loss.item())
+        loss = mx.mean((predictions - mx.array(y_valid_scaled)) ** 2)
+        raw_predictions = (
+            np.asarray(predictions, dtype=np.float32) * self.target_std_ + self.target_mean_
+        )
+        metrics = {"mse": float(loss.item())}
+        metric_name = self.config.validation_metric.lower()
+        if metric_name == "spearman":
+            metrics["score"] = float(spearman_corr(y_valid_raw, raw_predictions))
+        elif metric_name == "era_corr":
+            if eras_valid is None:
+                raise ValueError("validation_metric='era_corr' requires eras_valid.")
+            metrics["score"] = float(
+                era_correlations(
+                    pd.DataFrame(
+                        {
+                            "era": eras_valid,
+                            "target": y_valid_raw,
+                            "prediction": raw_predictions,
+                        }
+                    )
+                ).mean()
+            )
+        return metrics
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         mx, _, _ = _mlx_modules()
@@ -242,6 +345,8 @@ class MLXTabularMLPRegressor:
         instance = cls(
             hidden_dims=tuple(raw_config["hidden_dims"]),
             dropout=float(raw_config["dropout"]),
+            activation=str(raw_config["activation"]),
+            use_layer_norm=bool(raw_config["use_layer_norm"]),
             learning_rate=float(raw_config["learning_rate"]),
             weight_decay=float(raw_config["weight_decay"]),
             batch_size=int(raw_config["batch_size"]),
@@ -249,6 +354,8 @@ class MLXTabularMLPRegressor:
             patience=int(raw_config["patience"]),
             validation_fraction=float(raw_config["validation_fraction"]),
             random_seed=int(raw_config["random_seed"]),
+            input_noise_std=float(raw_config.get("input_noise_std", 0.0)),
+            validation_metric=str(raw_config.get("validation_metric", "mse")),
         )
         scaler = np.load(model_dir / "scaler.npz")
         instance.feature_mean_ = scaler["feature_mean"]

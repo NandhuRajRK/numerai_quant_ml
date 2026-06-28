@@ -26,6 +26,29 @@ def parse_args() -> argparse.Namespace:
         help="Path to an existing walk-forward artifact directory with checkpoints.",
     )
     parser.add_argument("--run-name", default=None, help="Optional output run directory name.")
+    parser.add_argument(
+        "--optimize-weights",
+        action="store_true",
+        help="Search for better ensemble weights from cached fold predictions.",
+    )
+    parser.add_argument(
+        "--objective",
+        default="mean_corr",
+        choices=["mean_corr", "sharpe_like"],
+        help="Optimization objective when --optimize-weights is enabled.",
+    )
+    parser.add_argument(
+        "--grid-step",
+        type=float,
+        default=0.05,
+        help="Simplex grid step for small model sets, for example 0.1 or 0.05.",
+    )
+    parser.add_argument(
+        "--random-trials",
+        type=int,
+        default=2000,
+        help="Random Dirichlet trials for larger model sets.",
+    )
     return parser.parse_args()
 
 
@@ -37,8 +60,13 @@ def main() -> None:
         source_run_dir=Path(args.source_run).resolve(),
         config=config,
         run_name=args.run_name,
+        optimize_weights=args.optimize_weights,
+        objective=args.objective,
+        grid_step=args.grid_step,
+        random_trials=args.random_trials,
     )
     LOGGER.info("Saved reblended artifacts to %s", results["run_dir"])
+    LOGGER.info("Blend weights: %s", results["weights"])
     LOGGER.info("Top models:")
     for row in results["leaderboard"].head(5).itertuples(index=False):
         LOGGER.info(

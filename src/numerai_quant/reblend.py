@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -19,6 +20,7 @@ from numerai_quant.features import (
     ensure_identifier_column,
     make_prediction_frame,
 )
+from numerai_quant.metrics import era_correlations, summarize_correlations
 from numerai_quant.reporting import (
     plot_correlation_histogram,
     plot_cumulative_correlation,
@@ -103,11 +105,177 @@ def _reblend_run_name(source_run_dir: Path) -> str:
     return f"reblend_{source_run_dir.name}_{timestamp_slug()}"
 
 
+def _blended_fold_predictions(
+    checkpoint_frame: pd.DataFrame,
+    prediction_columns: dict[str, str],
+    weights: dict[str, float],
+    *,
+    id_col: str,
+    prediction_col: str,
+) -> np.ndarray:
+    blended_values = sum(
+        weights[name] * checkpoint_frame[column].to_numpy()
+        for name, column in prediction_columns.items()
+    )
+    ensemble_frame = make_prediction_frame(
+        checkpoint_frame[id_col],
+        blended_values,
+        id_col=id_col,
+        prediction_col=prediction_col,
+    )
+    return ensemble_frame[prediction_col].to_numpy()
+
+
+def _evaluate_cached_weights(
+    checkpoint_frames: list[pd.DataFrame],
+    model_names: list[str],
+    weights: dict[str, float],
+    *,
+    config: PipelineConfig,
+) -> dict[str, float]:
+    fold_predictions: list[pd.DataFrame] = []
+    for checkpoint_frame in checkpoint_frames:
+        prediction_columns = _select_model_prediction_columns(checkpoint_frame, model_names)
+        blended = _blended_fold_predictions(
+            checkpoint_frame,
+            prediction_columns,
+            weights,
+            id_col=config.id_col,
+            prediction_col=config.prediction_col,
+        )
+        fold_predictions.append(
+            pd.DataFrame(
+                {
+                    config.era_col: checkpoint_frame[config.era_col].to_numpy(),
+                    config.target_col: checkpoint_frame[config.target_col].to_numpy(),
+                    config.prediction_col: blended,
+                }
+            )
+        )
+    evaluation_frame = pd.concat(fold_predictions, ignore_index=True)
+    correlations = era_correlations(
+        evaluation_frame,
+        era_col=config.era_col,
+        target_col=config.target_col,
+        prediction_col=config.prediction_col,
+    )
+    return summarize_correlations(correlations)
+
+
+def _candidate_weight_vectors(model_count: int, *, grid_step: float) -> list[np.ndarray]:
+    if model_count < 2:
+        raise ValueError("Weight optimization needs at least two models.")
+    if not 0 < grid_step <= 1:
+        raise ValueError("grid_step must be in (0, 1].")
+
+    step_count = int(round(1.0 / grid_step))
+    if not np.isclose(step_count * grid_step, 1.0):
+        raise ValueError("grid_step must divide 1.0 exactly, for example 0.1 or 0.05.")
+
+    candidates: list[np.ndarray] = []
+    current = np.zeros(model_count, dtype=int)
+
+    def build(position: int, remaining: int) -> None:
+        if position == model_count - 1:
+            current[position] = remaining
+            candidates.append(current.copy() / step_count)
+            return
+        for value in range(remaining + 1):
+            current[position] = value
+            build(position + 1, remaining - value)
+
+    build(0, step_count)
+    return candidates
+
+
+def optimize_cached_blend_weights(
+    checkpoint_frames: list[pd.DataFrame],
+    model_names: list[str],
+    *,
+    config: PipelineConfig,
+    objective: str = "mean_corr",
+    grid_step: float = 0.05,
+    random_trials: int = 2000,
+) -> tuple[dict[str, float], pd.DataFrame]:
+    """Search for stronger ensemble weights using cached fold predictions."""
+    if objective not in {"mean_corr", "sharpe_like"}:
+        raise ValueError("objective must be 'mean_corr' or 'sharpe_like'.")
+    if len(model_names) < 2:
+        raise ValueError("Need at least two models to optimize blend weights.")
+
+    candidates: list[np.ndarray]
+    if len(model_names) <= 4:
+        candidates = _candidate_weight_vectors(len(model_names), grid_step=grid_step)
+    else:
+        rng = np.random.default_rng(config.random_seed)
+        candidates = [rng.dirichlet(np.ones(len(model_names))) for _ in range(random_trials)]
+
+    seed_weights = normalized_weights([{"name": name, "weight": 1.0} for name in model_names])
+    current_weights = {
+        spec["name"]: float(spec.get("weight", 1.0))
+        for spec in enabled_model_specs(config)
+        if spec["name"] in set(model_names)
+    }
+    current_total = sum(current_weights.values())
+    if current_total > 0:
+        candidates.extend(
+            [
+                np.array(
+                    [current_weights[name] / current_total for name in model_names],
+                    dtype=float,
+                ),
+                np.array([seed_weights[name] for name in model_names], dtype=float),
+            ]
+        )
+
+    seen: set[tuple[float, ...]] = set()
+    rows: list[dict[str, float | int]] = []
+    for vector in candidates:
+        key = tuple(np.round(vector, 10))
+        if key in seen:
+            continue
+        seen.add(key)
+        weights = {name: float(value) for name, value in zip(model_names, vector, strict=True)}
+        summary = _evaluate_cached_weights(
+            checkpoint_frames,
+            model_names,
+            weights,
+            config=config,
+        )
+        row: dict[str, float | int] = {
+            "candidate_rank": 0,
+            "objective_value": float(summary[objective]),
+            "mean_corr": float(summary["mean_corr"]),
+            "sharpe_like": float(summary["sharpe_like"]),
+            "max_drawdown": float(summary["max_drawdown"]),
+        }
+        for name in model_names:
+            row[f"weight_{name}"] = weights[name]
+        rows.append(row)
+
+    leaderboard = (
+        pd.DataFrame(rows)
+        .sort_values(
+            ["objective_value", "mean_corr", "sharpe_like"],
+            ascending=[False, False, False],
+        )
+        .reset_index(drop=True)
+    )
+    leaderboard["candidate_rank"] = leaderboard.index + 1
+    best = leaderboard.iloc[0]
+    best_weights = {name: float(best[f"weight_{name}"]) for name in model_names}
+    return best_weights, leaderboard
+
+
 def recompute_ensemble_from_cached_predictions(
     *,
     source_run_dir: Path,
     config: PipelineConfig,
     run_name: str | None = None,
+    optimize_weights: bool = False,
+    objective: str = "mean_corr",
+    grid_step: float = 0.05,
+    random_trials: int = 2000,
 ) -> dict[str, Any]:
     """Recompute ensemble artifacts from cached fold predictions."""
     source_config = _load_run_config(source_run_dir, config.root_dir)
@@ -119,6 +287,21 @@ def recompute_ensemble_from_cached_predictions(
 
     checkpoint_frames = [pd.read_parquet(path) for path in checkpoints]
     oof_cached = pd.concat(checkpoint_frames, ignore_index=True)
+    optimized_weight_table: pd.DataFrame | None = None
+    if optimize_weights:
+        LOGGER.info(
+            "Optimizing ensemble weights from cached predictions | objective=%s",
+            objective,
+        )
+        weights, optimized_weight_table = optimize_cached_blend_weights(
+            checkpoint_frames,
+            model_names,
+            config=config,
+            objective=objective,
+            grid_step=grid_step,
+            random_trials=random_trials,
+        )
+        LOGGER.info("Optimized weights: %s", weights)
     feature_lookup, feature_cols = _validation_feature_frame(
         source_config,
         ids=oof_cached[config.id_col],
@@ -134,9 +317,15 @@ def recompute_ensemble_from_cached_predictions(
             "source_run_dir": str(source_run_dir),
             "reblend_model_names": model_names,
             "weights": weights,
+            "optimize_weights": optimize_weights,
+            "objective": objective,
+            "grid_step": grid_step,
+            "random_trials": random_trials,
         },
         run_dir / "reblend_source.json",
     )
+    if optimized_weight_table is not None:
+        save_dataframe(optimized_weight_table, run_dir / "optimized_weight_search.csv")
 
     fold_rows = source_model_rows.to_dict(orient="records")
     oof_frames: list[pd.DataFrame] = []
@@ -147,15 +336,18 @@ def recompute_ensemble_from_cached_predictions(
     for checkpoint_path, checkpoint_frame in zip(checkpoints, checkpoint_frames, strict=True):
         fold_number = _checkpoint_fold_number(checkpoint_path)
         prediction_columns = _select_model_prediction_columns(checkpoint_frame, model_names)
-        blended_values = sum(
-            weights[name] * checkpoint_frame[column].to_numpy()
-            for name, column in prediction_columns.items()
-        )
-        ensemble_frame = make_prediction_frame(
-            checkpoint_frame[config.id_col],
-            blended_values,
+        blended_predictions = _blended_fold_predictions(
+            checkpoint_frame,
+            prediction_columns,
+            weights,
             id_col=config.id_col,
             prediction_col=config.prediction_col,
+        )
+        ensemble_frame = pd.DataFrame(
+            {
+                config.id_col: checkpoint_frame[config.id_col].to_numpy(),
+                config.prediction_col: blended_predictions,
+            }
         )
 
         report_frame = checkpoint_frame[
@@ -282,4 +474,6 @@ def recompute_ensemble_from_cached_predictions(
         "fold_metrics": fold_metrics,
         "oof_frame": oof_result,
         "final_report": final_report,
+        "weights": weights,
+        "optimized_weight_search": optimized_weight_table,
     }

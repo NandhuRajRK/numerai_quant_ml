@@ -207,7 +207,14 @@ def run_walk_forward_backtest(
                 spec["name"],
                 len(model_feature_cols),
             )
-            model = fit_model(spec, X_train, y_train)
+            fit_kwargs: dict[str, Any] = {}
+            if spec["type"] == "mlx_mlp":
+                fit_kwargs = {
+                    "X_valid": valid_split[model_feature_cols],
+                    "y_valid": valid_split[config.target_col],
+                    "eras_valid": valid_split[config.era_col],
+                }
+            model = fit_model(spec, X_train, y_train, **fit_kwargs)
             raw_valid_predictions[spec["name"]] = raw_predict(
                 model,
                 valid_split[model_feature_cols],

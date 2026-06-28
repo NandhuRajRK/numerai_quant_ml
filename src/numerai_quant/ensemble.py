@@ -70,11 +70,19 @@ def create_model(spec: dict[str, Any]) -> Any:
     raise ValueError(f"Unsupported model type: {model_type}")
 
 
-def fit_model(spec: dict[str, Any], X: pd.DataFrame, y: pd.Series) -> Any:
+def fit_model(
+    spec: dict[str, Any],
+    X: pd.DataFrame,
+    y: pd.Series,
+    **fit_kwargs: Any,
+) -> Any:
     """Fit a configured model."""
     model = create_model(spec)
     LOGGER.info("Training %s (%s)", spec["name"], spec["type"])
-    model.fit(X, y)
+    if spec["type"] == "mlx_mlp":
+        model.fit(X, y, **fit_kwargs)
+    else:
+        model.fit(X, y)
     return model
 
 
