@@ -40,37 +40,41 @@ At this point it supports:
 - walk-forward backtesting by era
 - cached reblending of saved fold predictions so you can test new ensemble weights without retraining base models
 
-## Sample Medium-Scale Result
+## Best Completed Result
 
-The current curated sample result comes from a tuned CatBoost-heavy setup plus a reblend step over cached fold predictions.
+The best completed result so far comes from the medium-scale MLX-inclusive walk-forward run.
 
-- `ensemble mean_corr`: `0.081136`
-- `ensemble sharpe_like`: `0.979448`
-- `catboost_optional mean_corr`: `0.079392`
+- `ensemble mean_corr`: `0.082707`
+- `ensemble sharpe_like`: `1.262571`
+- `mlx_mlp_optional mean_corr`: `0.058747`
 - `lgbm_main mean_corr`: `0.070495`
 
-Those artifacts are copied into:
+This run shows that the MLX branch is useful as a diversification signal inside the ensemble, even though the standalone MLX model is not stronger than the main LightGBM model.
+
+The earlier CatBoost-heavy sample artifacts are still copied into:
 
 - [summary.json](docs/sample_artifacts/best_medium_reblend/summary.json)
 - [model_leaderboard.csv](docs/sample_artifacts/best_medium_reblend/model_leaderboard.csv)
 - [report.md](docs/sample_artifacts/best_medium_reblend/report.md)
 
-That is still a backtest result, not evidence of live profitability.
+This is still a backtest result, not evidence of live profitability.
 
-This is a medium-scale experiment intended as a lightweight, reproducible sample. The curated sample run uses `12` validation eras. Separate benchmark configs expand the walk-forward window to `60` validation eras for broader evaluation.
+The current best completed run comes from the medium-scale validation setup with `12` validation eras. Separate benchmark configs expand the walk-forward window to `60` validation eras for broader evaluation when longer runs are practical.
 
 For a broader benchmark-oriented artifact, see [docs/benchmark_60_eras/report.md](docs/benchmark_60_eras/report.md).
 
-### Sample Results
+### Current Best Completed Run
 
 | Model | Mean CORR | Sharpe-like |
 | --- | ---: | ---: |
-| ensemble | 0.081136 | 0.979448 |
-| ensemble_neutralized | 0.080321 | 0.966310 |
-| catboost_optional | 0.079392 | 0.928660 |
+| ensemble | 0.082707 | 1.262571 |
+| ensemble_neutralized | 0.082453 | 1.234679 |
+| mlx_mlp_optional | 0.058747 | 3.461954 |
 | lgbm_main | 0.070495 | 1.045938 |
 
-![Cumulative correlation from the sample medium run](docs/sample_artifacts/best_medium_reblend/cumulative_corr.png)
+The CatBoost-heavy sample artifacts remain useful as a compact reproducible example, and the current sample figure below comes from that curated medium-scale run.
+
+![Cumulative correlation from the curated medium-scale sample run](docs/sample_artifacts/best_medium_reblend/cumulative_corr.png)
 
 ## Repo Layout
 

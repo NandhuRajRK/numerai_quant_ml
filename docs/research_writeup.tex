@@ -28,7 +28,7 @@
 \maketitle
 
 \begin{abstract}
-This document summarizes the design and iteration history of a reproducible Numerai research pipeline for cross-sectional tabular prediction. The project began as a simple LightGBM baseline and evolved into a multi-model experiment system with era-aware walk-forward validation, feature exposure diagnostics, post-prediction neutralization, cached ensemble reblending, live prediction generation, and dry-run submission support. The goal was not to claim profitability, but to build a practical research workflow that reflects realistic quant-ML and ML engineering practice. This writeup focuses on what was implemented, the failures encountered, the fixes applied, the alternative paths explored, and what the current results support.
+This document summarizes the design and iteration history of a reproducible Numerai research pipeline for cross-sectional tabular prediction. The project began as a simple LightGBM baseline and evolved into a multi-model experiment system with era-aware walk-forward validation, feature exposure diagnostics, post-prediction neutralization, cached ensemble reblending, live prediction generation, and dry-run submission support. The goal was not to claim profitability, but to build a practical research workflow that reflects realistic quant-ML and ML engineering practice. The current best completed result is a medium-scale MLX-inclusive ensemble run with mean CORR 0.082707 and Sharpe-like score 1.262571. This writeup focuses on what was implemented, the failures encountered, the fixes applied, the alternative paths explored, and what the current results support.
 \end{abstract}
 
 \section{Project Goal}
@@ -236,7 +236,7 @@ lgbm\_alt & 0.052972 & 0.977822 \\
 \end{tabular}
 \end{center}
 
-This was the best medium-scale ensemble score observed in the project. However, the MLX model itself was not the strongest standalone learner. Its value appeared to come from diversification rather than raw standalone accuracy.
+This was the best completed ensemble score observed in the project. However, the MLX model itself was not the strongest standalone learner. Its value appeared to come from diversification rather than raw standalone accuracy.
 
 When the same MLX branch was optimized with cached reblending, the result fell to:
 
@@ -314,7 +314,7 @@ The current repository supports several honest claims:
   \item Era-aware backtesting was implemented correctly enough to make model comparisons more credible than random-split baselines.
   \item Ensembling across model families was useful, and cached reblending improved iteration speed substantially.
   \item CatBoost became the strongest stable tree-based alternative beyond LightGBM.
-  \item MLX-based neural models became competitive enough to improve a medium-scale ensemble result, even if they are not yet the most stable branch.
+  \item MLX-based neural models became competitive enough to improve the best completed ensemble result, even if they are not yet the most stable branch.
 \end{enumerate}
 
 At the same time, the repository does \emph{not} support stronger claims such as:
@@ -326,7 +326,7 @@ At the same time, the repository does \emph{not} support stronger claims such as
   \item or a definitive statement that the neural branch is superior to the tree branch.
 \end{itemize}
 
-The medium sample run still uses 12 validation eras, which is useful for iteration and documentation but not enough for a strong claim on its own. Stronger benchmark configurations with 60 validation eras have already been added to address this.
+The best completed run still uses 12 validation eras, which is useful for iteration and model comparison but narrower than the stronger benchmark configurations that have also been prepared.
 
 \section{Alternative Paths Explored}
 
@@ -358,7 +358,7 @@ At the time of writing, the project has two strong research branches:
 
 \begin{itemize}[leftmargin=1.5em]
   \item a \textbf{CatBoost-heavy branch}, which is the strongest stable benchmark path;
-  \item an \textbf{MLX-inclusive branch}, which may produce higher medium-run ensemble scores but has not yet shown the same robustness under blend optimization.
+  \item an \textbf{MLX-inclusive branch}, which produced the best completed ensemble score but has not yet shown the same robustness under blend optimization.
 \end{itemize}
 
 The practical interpretation is:
@@ -373,7 +373,7 @@ The practical interpretation is:
 The next steps are straightforward:
 
 \begin{enumerate}[leftmargin=1.5em]
-  \item run the 60-validation-era benchmark configurations and replace medium-scale claims with stronger evidence;
+  \item run the 60-validation-era benchmark configurations and compare them against the current best completed medium-scale run;
   \item re-optimize blends on those stronger runs;
   \item decide whether the public benchmark should remain CatBoost-heavy or whether the MLX branch survives at larger scale;
   \item eventually track live submission behavior rather than only backtest outputs.
