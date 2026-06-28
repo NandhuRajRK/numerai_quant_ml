@@ -105,6 +105,21 @@ def _reblend_run_name(source_run_dir: Path) -> str:
     return f"reblend_{source_run_dir.name}_{timestamp_slug()}"
 
 
+def split_selection_holdout_frames(
+    checkpoint_frames: list[pd.DataFrame],
+    *,
+    holdout_folds: int,
+) -> tuple[list[pd.DataFrame], list[pd.DataFrame]]:
+    """Split cached fold frames into selection and untouched holdout segments."""
+    if holdout_folds < 0:
+        raise ValueError("holdout_folds must be non-negative.")
+    if holdout_folds == 0:
+        return checkpoint_frames, []
+    if holdout_folds >= len(checkpoint_frames):
+        raise ValueError("holdout_folds must be smaller than the number of available folds.")
+    return checkpoint_frames[:-holdout_folds], checkpoint_frames[-holdout_folds:]
+
+
 def _blended_fold_predictions(
     checkpoint_frame: pd.DataFrame,
     prediction_columns: dict[str, str],
@@ -267,6 +282,26 @@ def optimize_cached_blend_weights(
     return best_weights, leaderboard
 
 
+def _split_summary_row(
+    split_name: str,
+    report: dict[str, Any],
+    *,
+    num_folds: int,
+) -> dict[str, float | int | str]:
+    summary = report["summary"]
+    return {
+        "split_name": split_name,
+        "num_folds": num_folds,
+        "mean_corr": float(summary["mean_corr"]),
+        "std_corr": float(summary["std_corr"]),
+        "sharpe_like": float(summary["sharpe_like"]),
+        "max_drawdown": float(summary["max_drawdown"]),
+        "mean_abs_feature_exposure": float(summary["mean_abs_feature_exposure"]),
+        "max_abs_feature_exposure": float(summary["max_abs_feature_exposure"]),
+        "num_eras": int(summary["num_eras"]),
+    }
+
+
 def recompute_ensemble_from_cached_predictions(
     *,
     source_run_dir: Path,
@@ -276,6 +311,7 @@ def recompute_ensemble_from_cached_predictions(
     objective: str = "mean_corr",
     grid_step: float = 0.05,
     random_trials: int = 2000,
+    holdout_folds: int = 0,
 ) -> dict[str, Any]:
     """Recompute ensemble artifacts from cached fold predictions."""
     source_config = _load_run_config(source_run_dir, config.root_dir)
@@ -286,15 +322,22 @@ def recompute_ensemble_from_cached_predictions(
     source_model_rows = _source_model_metrics(source_run_dir, model_names)
 
     checkpoint_frames = [pd.read_parquet(path) for path in checkpoints]
+    selection_frames, holdout_frames = split_selection_holdout_frames(
+        checkpoint_frames,
+        holdout_folds=holdout_folds,
+    )
     oof_cached = pd.concat(checkpoint_frames, ignore_index=True)
     optimized_weight_table: pd.DataFrame | None = None
     if optimize_weights:
         LOGGER.info(
-            "Optimizing ensemble weights from cached predictions | objective=%s",
+            "Optimizing ensemble weights from cached predictions | "
+            "objective=%s | selection_folds=%s | holdout_folds=%s",
             objective,
+            len(selection_frames),
+            len(holdout_frames),
         )
         weights, optimized_weight_table = optimize_cached_blend_weights(
-            checkpoint_frames,
+            selection_frames,
             model_names,
             config=config,
             objective=objective,
@@ -321,6 +364,8 @@ def recompute_ensemble_from_cached_predictions(
             "objective": objective,
             "grid_step": grid_step,
             "random_trials": random_trials,
+            "holdout_folds": holdout_folds,
+            "selection_folds": len(selection_frames),
         },
         run_dir / "reblend_source.json",
     )
@@ -330,6 +375,7 @@ def recompute_ensemble_from_cached_predictions(
     fold_rows = source_model_rows.to_dict(orient="records")
     oof_frames: list[pd.DataFrame] = []
     final_report_frames: list[pd.DataFrame] = []
+    final_report_frames_by_fold: list[tuple[int, pd.DataFrame]] = []
     neutralization_cfg = dict(config.raw["advanced"]["neutralization"])
     use_neutralization = bool(neutralization_cfg["enabled"])
 
@@ -408,6 +454,7 @@ def recompute_ensemble_from_cached_predictions(
         final_frame = report_frame.copy()
         final_frame[config.prediction_col] = final_prediction
         final_report_frames.append(final_frame)
+        final_report_frames_by_fold.append((fold_number, final_frame))
 
     oof_result = pd.concat(oof_frames, ignore_index=True)
     final_report_frame = pd.concat(final_report_frames, ignore_index=True)
@@ -419,6 +466,66 @@ def recompute_ensemble_from_cached_predictions(
         prediction_col=config.prediction_col,
         exposure_sample_size=int(config.raw["validation"]["feature_exposure_sample_size"]),
     )
+
+    holdout_evaluation: pd.DataFrame | None = None
+    if holdout_folds > 0:
+        selection_fold_numbers = {
+            _checkpoint_fold_number(path) for path in checkpoints[:-holdout_folds]
+        }
+        holdout_fold_numbers = {
+            _checkpoint_fold_number(path) for path in checkpoints[-holdout_folds:]
+        }
+        selection_frame = pd.concat(
+            [
+                frame
+                for fold_number, frame in final_report_frames_by_fold
+                if fold_number in selection_fold_numbers
+            ],
+            ignore_index=True,
+        )
+        holdout_frame = pd.concat(
+            [
+                frame
+                for fold_number, frame in final_report_frames_by_fold
+                if fold_number in holdout_fold_numbers
+            ],
+            ignore_index=True,
+        )
+        selection_report = validation_report(
+            selection_frame,
+            feature_cols,
+            era_col=config.era_col,
+            target_col=config.target_col,
+            prediction_col=config.prediction_col,
+            exposure_sample_size=int(config.raw["validation"]["feature_exposure_sample_size"]),
+        )
+        holdout_report = validation_report(
+            holdout_frame,
+            feature_cols,
+            era_col=config.era_col,
+            target_col=config.target_col,
+            prediction_col=config.prediction_col,
+            exposure_sample_size=int(config.raw["validation"]["feature_exposure_sample_size"]),
+        )
+        holdout_evaluation = pd.DataFrame(
+            [
+                _split_summary_row(
+                    "selection_folds",
+                    selection_report,
+                    num_folds=len(selection_fold_numbers),
+                ),
+                _split_summary_row(
+                    "holdout_folds",
+                    holdout_report,
+                    num_folds=len(holdout_fold_numbers),
+                ),
+                _split_summary_row(
+                    "all_folds",
+                    final_report,
+                    num_folds=len(checkpoints),
+                ),
+            ]
+        )
 
     fold_metrics = pd.DataFrame(fold_rows)
     leaderboard = (
@@ -440,6 +547,8 @@ def recompute_ensemble_from_cached_predictions(
     )
     save_dataframe(feature_exposure_frame, run_dir / "feature_exposure.csv")
     save_json(final_report["summary"], run_dir / "summary.json")
+    if holdout_evaluation is not None:
+        save_dataframe(holdout_evaluation, run_dir / "holdout_evaluation.csv")
     plot_cumulative_correlation(
         final_report["era_correlations"],
         run_dir / "plots" / "cumulative_corr.png",
@@ -476,4 +585,5 @@ def recompute_ensemble_from_cached_predictions(
         "final_report": final_report,
         "weights": weights,
         "optimized_weight_search": optimized_weight_table,
+        "holdout_evaluation": holdout_evaluation,
     }

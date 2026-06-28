@@ -27,7 +27,7 @@ def era_correlations(
     if missing:
         raise ValueError(f"Missing required columns for era correlations: {sorted(missing)}")
 
-    return frame.groupby(era_col, sort=True).apply(
+    return frame.groupby(era_col, sort=False).apply(
         lambda era: spearman_corr(era[target_col], era[prediction_col]),
         include_groups=False,
     )

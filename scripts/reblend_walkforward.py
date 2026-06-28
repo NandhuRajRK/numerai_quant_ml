@@ -49,6 +49,12 @@ def parse_args() -> argparse.Namespace:
         default=2000,
         help="Random Dirichlet trials for larger model sets.",
     )
+    parser.add_argument(
+        "--holdout-folds",
+        type=int,
+        default=0,
+        help="Reserve the latest N folds as untouched holdout folds during weight search.",
+    )
     return parser.parse_args()
 
 
@@ -64,6 +70,7 @@ def main() -> None:
         objective=args.objective,
         grid_step=args.grid_step,
         random_trials=args.random_trials,
+        holdout_folds=args.holdout_folds,
     )
     LOGGER.info("Saved reblended artifacts to %s", results["run_dir"])
     LOGGER.info("Blend weights: %s", results["weights"])
